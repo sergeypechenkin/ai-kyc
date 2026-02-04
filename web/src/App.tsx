@@ -1,0 +1,200 @@
+import { useState, useEffect, useCallback } from 'react';
+import { Settings } from 'lucide-react';
+import CustomerChat from './components/CustomerChat';
+import EmployeeChat from './components/EmployeeChat';
+import ActivityLog from './components/ActivityLog';
+import GroundingToggle from './components/GroundingToggle';
+import { useWebSocket } from './hooks/useWebSocket';
+import { ActivityEvent, ChatMessage } from './types';
+
+function App() {
+  const [groundingEnabled, setGroundingEnabled] = useState(false);
+  const [customerMessages, setCustomerMessages] = useState<ChatMessage[]>([]);
+  const [employeeMessages, setEmployeeMessages] = useState<ChatMessage[]>([]);
+  const [activities, setActivities] = useState<ActivityEvent[]>([]);
+  const [showSettings, setShowSettings] = useState(false);
+
+  // WebSocket connections
+  const customerWs = useWebSocket('customer');
+  const employeeWs = useWebSocket('employee');
+  const activityWs = useWebSocket('activity');
+
+  // Handle incoming customer messages
+  useEffect(() => {
+    if (customerWs.lastMessage) {
+      const msg = customerWs.lastMessage;
+      if (msg.type === 'message') {
+        setCustomerMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          role: msg.role,
+          content: msg.content,
+          agent: msg.agent,
+          timestamp: new Date(),
+        }]);
+      }
+    }
+  }, [customerWs.lastMessage]);
+
+  // Handle incoming employee messages
+  useEffect(() => {
+    if (employeeWs.lastMessage) {
+      const msg = employeeWs.lastMessage;
+      if (msg.type === 'message') {
+        setEmployeeMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          role: msg.role,
+          content: msg.content,
+          agent: msg.agent,
+          timestamp: new Date(),
+        }]);
+      }
+    }
+  }, [employeeWs.lastMessage]);
+
+  // Handle activity events
+  useEffect(() => {
+    if (activityWs.lastMessage) {
+      const msg = activityWs.lastMessage;
+      if (msg.type === 'activity') {
+        setActivities(prev => [...prev, {
+          id: msg.data.id || Date.now().toString(),
+          type: msg.data.type,
+          agentName: msg.data.agent_name,
+          timestamp: new Date(msg.data.timestamp),
+          data: msg.data.data || msg.data,
+          durationMs: msg.data.duration_ms,
+        }]);
+      }
+    }
+  }, [activityWs.lastMessage]);
+
+  // Send customer message
+  const sendCustomerMessage = useCallback((content: string) => {
+    // Add user message to chat
+    setCustomerMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: 'user',
+      content,
+      timestamp: new Date(),
+    }]);
+    
+    // Send via WebSocket
+    customerWs.send({ type: 'chat', content });
+  }, [customerWs]);
+
+  // Send employee message
+  const sendEmployeeMessage = useCallback((content: string) => {
+    // Add user message to chat
+    setEmployeeMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: 'user',
+      content,
+      timestamp: new Date(),
+    }]);
+    
+    // Send via WebSocket
+    employeeWs.send({ type: 'chat', content });
+  }, [employeeWs]);
+
+  // Toggle grounding
+  const handleGroundingToggle = async (enabled: boolean) => {
+    try {
+      const response = await fetch('/api/config/grounding', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      
+      if (response.ok) {
+        setGroundingEnabled(enabled);
+      }
+    } catch (error) {
+      console.error('Failed to toggle grounding:', error);
+    }
+  };
+
+  // Load initial config
+  useEffect(() => {
+    fetch('/api/config/grounding')
+      .then(res => res.json())
+      .then(data => setGroundingEnabled(data.enabled))
+      .catch(console.error);
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-gray-100">
+      {/* Header */}
+      <header className="bg-zava-purple text-white shadow-lg">
+        <div className="max-w-full mx-auto px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center">
+              <span className="text-zava-purple font-bold text-lg">ZB</span>
+            </div>
+            <div>
+              <h1 className="text-xl font-semibold">Zava Bank AI-KYC</h1>
+              <p className="text-purple-200 text-sm">Multi-Agent KYC System</p>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-4">
+            <GroundingToggle 
+              enabled={groundingEnabled} 
+              onToggle={handleGroundingToggle} 
+            />
+            <button 
+              onClick={() => setShowSettings(!showSettings)}
+              className="p-2 hover:bg-zava-purple-dark rounded-lg transition-colors"
+            >
+              <Settings className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="max-w-full mx-auto p-4">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-[calc(100vh-120px)]">
+          {/* Customer Chat */}
+          <div className="bg-white rounded-xl shadow-md overflow-hidden flex flex-col">
+            <div className="bg-blue-600 text-white px-4 py-3">
+              <h2 className="font-semibold">Customer Chat</h2>
+              <p className="text-blue-200 text-sm">Talk to the Customer Service Agent</p>
+            </div>
+            <CustomerChat
+              messages={customerMessages}
+              onSendMessage={sendCustomerMessage}
+              isConnected={customerWs.isConnected}
+            />
+          </div>
+
+          {/* Employee Chat */}
+          <div className="bg-white rounded-xl shadow-md overflow-hidden flex flex-col">
+            <div className="bg-green-600 text-white px-4 py-3">
+              <h2 className="font-semibold">Bank Employee Chat</h2>
+              <p className="text-green-200 text-sm">Bank Employee Agent Interface</p>
+            </div>
+            <EmployeeChat
+              messages={employeeMessages}
+              onSendMessage={sendEmployeeMessage}
+              isConnected={employeeWs.isConnected}
+            />
+          </div>
+
+          {/* Activity Log */}
+          <div className="bg-white rounded-xl shadow-md overflow-hidden flex flex-col">
+            <div className="bg-gray-800 text-white px-4 py-3">
+              <h2 className="font-semibold">Activity Log</h2>
+              <p className="text-gray-400 text-sm">Agent internals & events</p>
+            </div>
+            <ActivityLog 
+              activities={activities}
+              isConnected={activityWs.isConnected}
+            />
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+export default App;
