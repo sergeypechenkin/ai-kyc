@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Send, Briefcase, Bot, Wifi, WifiOff } from 'lucide-react';
 import { ChatMessage } from '../types';
+import DocumentUpload from './DocumentUpload';
 
 interface EmployeeChatProps {
   messages: ChatMessage[];
@@ -97,6 +98,14 @@ export default function EmployeeChat({ messages, onSendMessage, isConnected }: E
 
       {/* Input */}
       <form onSubmit={handleSubmit} className="p-4 border-t bg-gray-50">
+        <div className="flex gap-2 mb-2">
+          <DocumentUpload 
+            onCustomerCreated={(customerId, accountNumber) => {
+              // Optionally notify the chat about the new customer
+              console.log(`Customer ${customerId} created with account ${accountNumber}`);
+            }}
+          />
+        </div>
         <div className="flex gap-2">
           <input
             type="text"

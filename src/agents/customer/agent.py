@@ -3,6 +3,7 @@
 from semantic_kernel import Kernel
 from semantic_kernel.agents import ChatCompletionAgent
 from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
+from semantic_kernel.connectors.ai.function_choice_behavior import FunctionChoiceBehavior
 from semantic_kernel.contents import ChatHistory
 
 from src.agents.core import (
@@ -14,32 +15,77 @@ from src.agents.core import (
     ActivityLogger,
 )
 
-CUSTOMER_AGENT_INSTRUCTIONS = """You are a friendly and professional Customer Service Agent for Zava Bank. 
-Your role is to help customers with their KYC (Know Your Customer) onboarding process and answer questions about bank accounts and services.
+CUSTOMER_AGENT_INSTRUCTIONS = """You are a Customer Service Agent for Zava Bank. Be helpful and concise.
 
-## Your Responsibilities:
-1. Guide customers through the account opening process
-2. Explain what documents are required for KYC verification
-3. Answer questions about bank accounts, fees, and services
-4. Help customers understand their application status
-5. Escalate to bank employees when verification or approval is needed
+TOOLS:
+- search_bank_documents: Search for fees, limits, policies
+- get_customer_by_email: Look up customer by email
+- create_new_customer_account: Create account after collecting all info
+- request_employee_review: Escalate to bank employee
 
-## Communication Style:
-- Be warm, professional, and patient
-- Use clear, simple language
-- Be empathetic to customer concerns
-- Always be transparent about processes and timelines
+WHEN TO ASK FOR DOCUMENTS:
+Only ask for document upload when:
+1. Customer explicitly wants to OPEN a new account
+2. AML/compliance requirements (suspicious activity review)
 
-## Important Guidelines:
-- Never make up information about fees or policies - use the document search when unsure
-- For verification status or approvals, escalate to the Bank Employee Agent
-- Protect customer privacy - don't share sensitive information unnecessarily
-- If document grounding is available, use it to provide accurate fee and policy information
+Do NOT ask for documents when:
+- Customer is just asking about fees, rates, or policies
+- Customer is asking general questions about the bank
+- Customer is inquiring about account types or features
+- Customer already submitted documents in this conversation
 
-## Available Tools:
-- Customer data lookup for checking existing profiles
-- Document search for bank policies and fee information (when grounding is enabled)
-- Inter-agent communication to request bank employee review
+ACCOUNT OPENING FLOW (only when customer wants to open account):
+
+1. WELCOME: Thank them and explain you'll help them open an account.
+   Say: "I'd be happy to help you open a bank account! To verify your identity, please upload your passport or driver's license."
+
+2. AFTER ID DOCUMENT: When customer shares extracted ID information:
+   - Confirm the extracted details are correct
+   - If address is missing from ID: "I notice your ID doesn't include your current address. Please upload a proof of address (utility bill, bank statement, or official letter from the last 3 months)."
+   - If address is present: Proceed to step 3
+
+3. COLLECT CONTACT INFO: Ask for email and phone number:
+   "Great! Now I just need your contact details:
+   - Email address
+   - Phone number"
+
+4. CONFIRMATION: Once you have all info, summarize and confirm:
+   "Perfect! Here's what I have:
+   - Name: [name]
+   - Date of Birth: [dob]
+   - Nationality: [nationality]
+   - Address: [address]
+   - Email: [email]
+   - Phone: [phone]
+   
+   Is everything correct? If so, I'll create your account."
+
+5. CREATE ACCOUNT: When confirmed, use the create_new_customer_account function.
+   After creating the account, tell the customer:
+   "Your account application has been submitted! To complete the verification process (KYC), 
+   please visit your nearest Zava Bank branch with your original photo ID (passport or driver's license).
+   Our staff will verify your documents and activate your account. This usually takes about 15 minutes."
+
+KYC VERIFICATION:
+- KYC verification REQUIRES an in-person visit to a bank branch
+- The customer must bring their ORIGINAL photo ID document
+- Do NOT ask customers to upload documents again for KYC - they already did for account opening
+- Document uploads are only for the INITIAL account application
+
+CRITICAL - NEVER SAY THESE PHRASES:
+- "Searching our documents..."
+- "Let me search..."
+- "I'll look that up..."
+Just call the tool silently, then respond with the answer.
+
+SEARCH QUERIES:
+Use SHORT queries (2-4 words): "savings account", "ATM limit", "overdraft fees"
+
+LIMITATIONS (politely decline):
+- ATM/branch locations
+- Transaction processing  
+- Account balance inquiries
+- Appointment booking
 """
 
 
@@ -80,12 +126,20 @@ class CustomerAgent(KycAgent):
 
     async def initialize(self) -> None:
         """Initialize the agent with its configuration."""
-        # Create the chat completion agent
+        # Create the chat completion agent with auto function calling
+        # Limit to 1 tool call per response to prevent excessive API calls
         self._agent = ChatCompletionAgent(
             kernel=self.kernel,
             name=self.name,
             instructions=CUSTOMER_AGENT_INSTRUCTIONS,
+            function_choice_behavior=FunctionChoiceBehavior.Auto(
+                maximum_auto_invoke_attempts=1
+            ),
         )
+
+        # Log available plugins for debugging
+        plugins = list(self.kernel.plugins.keys()) if self.kernel.plugins else []
+        await self.log_activity("agent_initialized", {"available_plugins": plugins})
 
         # Set up activity logging filters
         if self.activity_logger:
@@ -118,10 +172,13 @@ class CustomerAgent(KycAgent):
 
         self._chat_history.add_user_message(message)
 
-        # Get response from agent
+        # Get response from agent - pass kernel to enable function calling
         response_content = ""
-        async for response in self._agent.invoke(self._chat_history):
+        async for response in self._agent.invoke(self._chat_history, kernel=self.kernel):
             response_content = str(response.content) if response.content else ""
+
+        # Clean response - remove any reasoning/thinking artifacts
+        response_content = self._clean_response(response_content)
 
         # Add assistant response to history for memory
         self._chat_history.add_assistant_message(response_content)
@@ -211,3 +268,61 @@ class CustomerAgent(KycAgent):
 
         combined = (user_message + " " + response).lower()
         return any(keyword in combined for keyword in handoff_keywords)
+
+    def _clean_response(self, response: str) -> str:
+        """Clean response from internal reasoning/thinking artifacts.
+
+        Args:
+            response: Raw response from the agent
+
+        Returns:
+            Cleaned response suitable for the user
+        """
+        import re
+
+        # Remove content before certain markers that indicate reasoning
+        reasoning_markers = [
+            "Search results:",
+            "We have results.",
+            "Now craft",
+            "Let's craft",
+            "Be careful not to",
+            "Make concise",
+            "Tools include",
+            "Good —",
+            "Great —",
+        ]
+
+        # Find where the actual user-facing response starts
+        # Look for common greeting patterns that start real responses
+        final_response_patterns = [
+            r"(?:^|\n)((?:Great|Hello|Hi|Sure|I can|I'd be|Here's|To open|For a|The|Your|Based on).*)",
+        ]
+
+        # Check if response contains reasoning markers
+        has_reasoning = any(marker.lower() in response.lower() for marker in reasoning_markers)
+
+        if has_reasoning:
+            # Try to extract just the final user-facing part
+            # Usually starts after "Make concise." or similar
+            lines = response.split('\n')
+            clean_lines = []
+            found_response = False
+
+            for line in lines:
+                # Skip lines that are clearly reasoning
+                line_lower = line.lower().strip()
+                is_reasoning = any(marker.lower() in line_lower for marker in reasoning_markers)
+
+                if is_reasoning:
+                    found_response = True  # Next substantive content is the response
+                    continue
+
+                # Once we've passed reasoning, collect the response
+                if found_response and line.strip():
+                    clean_lines.append(line)
+
+            if clean_lines:
+                return '\n'.join(clean_lines).strip()
+
+        return response.strip()

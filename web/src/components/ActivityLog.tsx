@@ -36,10 +36,68 @@ const eventConfig: Record<string, { icon: React.ElementType; color: string; bgCo
   default: { icon: Clock, color: 'text-gray-500', bgColor: 'bg-gray-100' },
 };
 
+// Format event title with context
+function getEventTitle(activity: ActivityEvent): { title: string; subtitle?: string } {
+  const data = activity.data || {};
+  
+  switch (activity.type) {
+    case 'tool_call_start':
+      return {
+        title: `🔧 Tool: ${(data.function as string) || 'unknown'}`,
+        subtitle: data.plugin ? `Plugin: ${data.plugin}` : undefined,
+      };
+    case 'tool_call_end':
+      return {
+        title: `✅ ${(data.function as string) || 'Tool'} completed`,
+        subtitle: data.result_preview ? String(data.result_preview).slice(0, 50) + '...' : undefined,
+      };
+    case 'tool_call_error':
+      return {
+        title: `❌ ${(data.function as string) || 'Tool'} failed`,
+        subtitle: data.error as string | undefined,
+      };
+    case 'document_search':
+      return {
+        title: `🔍 Document Search`,
+        subtitle: data.query as string | undefined,
+      };
+    case 'document_retrieved':
+      return {
+        title: `📄 ${data.count || 0} documents found`,
+        subtitle: data.source as string | undefined,
+      };
+    case 'inter_agent_message':
+      return {
+        title: `💬 ${data.from || 'Agent'} → ${data.to || 'Agent'}`,
+        subtitle: data.message ? String(data.message).slice(0, 60) : undefined,
+      };
+    case 'agent_start':
+      return {
+        title: `▶️ Agent started`,
+        subtitle: data.message ? String(data.message).slice(0, 60) : undefined,
+      };
+    case 'agent_response':
+      return {
+        title: `💬 Agent response`,
+        subtitle: data.response ? String(data.response).slice(0, 60) : undefined,
+      };
+    case 'prompt_rendered':
+      return {
+        title: `📝 Prompt (${data.prompt_length || 0} chars)`,
+        subtitle: data.function as string | undefined,
+      };
+    default:
+      return {
+        title: activity.type.replace(/_/g, ' '),
+      };
+  }
+}
+
 function ActivityItem({ activity }: { activity: ActivityEvent }) {
   const [expanded, setExpanded] = useState(false);
   const config = eventConfig[activity.type] || eventConfig.default;
   const Icon = config.icon;
+  const { title, subtitle } = getEventTitle(activity);
 
   return (
     <div className="border-b border-gray-100 last:border-0 animate-slide-in">
@@ -54,7 +112,7 @@ function ActivityItem({ activity }: { activity: ActivityEvent }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="font-medium text-sm text-gray-900 truncate">
-              {activity.type.replace(/_/g, ' ')}
+              {title}
             </span>
             {activity.durationMs && (
               <span className="text-xs text-gray-400">
@@ -62,7 +120,10 @@ function ActivityItem({ activity }: { activity: ActivityEvent }) {
               </span>
             )}
           </div>
-          {activity.agentName && (
+          {subtitle && (
+            <span className="text-xs text-gray-500 truncate block">{subtitle}</span>
+          )}
+          {activity.agentName && !subtitle && (
             <span className="text-xs text-gray-500">{activity.agentName}</span>
           )}
         </div>

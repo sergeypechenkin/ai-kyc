@@ -14,8 +14,15 @@ export function useWebSocket(channel: string): UseWebSocketReturn {
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
+  const isConnectingRef = useRef(false);
 
   const connect = useCallback(() => {
+    // Prevent duplicate connections (especially in StrictMode)
+    if (isConnectingRef.current || (wsRef.current && wsRef.current.readyState === WebSocket.OPEN)) {
+      return;
+    }
+    isConnectingRef.current = true;
+
     try {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const host = window.location.host;
@@ -27,6 +34,7 @@ export function useWebSocket(channel: string): UseWebSocketReturn {
       ws.onopen = () => {
         setIsConnected(true);
         setError(null);
+        isConnectingRef.current = false;
         console.log(`WebSocket connected to ${channel}`);
       };
 
@@ -42,10 +50,12 @@ export function useWebSocket(channel: string): UseWebSocketReturn {
       ws.onerror = (event) => {
         console.error(`WebSocket error on ${channel}:`, event);
         setError('Connection error');
+        isConnectingRef.current = false;
       };
 
       ws.onclose = () => {
         setIsConnected(false);
+        isConnectingRef.current = false;
         console.log(`WebSocket disconnected from ${channel}`);
         
         // Attempt to reconnect after 3 seconds

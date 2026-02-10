@@ -23,14 +23,15 @@ function App() {
   useEffect(() => {
     if (customerWs.lastMessage) {
       const msg = customerWs.lastMessage;
-      if (msg.type === 'message') {
-        setCustomerMessages(prev => [...prev, {
+      if (msg.type === 'message' && msg.role && msg.content) {
+        const newMessage: ChatMessage = {
           id: Date.now().toString(),
-          role: msg.role,
+          role: msg.role as 'user' | 'assistant' | 'system',
           content: msg.content,
           agent: msg.agent,
           timestamp: new Date(),
-        }]);
+        };
+        setCustomerMessages(prev => [...prev, newMessage]);
       }
     }
   }, [customerWs.lastMessage]);
@@ -39,14 +40,15 @@ function App() {
   useEffect(() => {
     if (employeeWs.lastMessage) {
       const msg = employeeWs.lastMessage;
-      if (msg.type === 'message') {
-        setEmployeeMessages(prev => [...prev, {
+      if (msg.type === 'message' && msg.role && msg.content) {
+        const newMessage: ChatMessage = {
           id: Date.now().toString(),
-          role: msg.role,
+          role: msg.role as 'user' | 'assistant' | 'system',
           content: msg.content,
           agent: msg.agent,
           timestamp: new Date(),
-        }]);
+        };
+        setEmployeeMessages(prev => [...prev, newMessage]);
       }
     }
   }, [employeeWs.lastMessage]);
@@ -55,14 +57,15 @@ function App() {
   useEffect(() => {
     if (activityWs.lastMessage) {
       const msg = activityWs.lastMessage;
-      if (msg.type === 'activity') {
+      if (msg.type === 'activity' && msg.data) {
+        const data = msg.data as Record<string, unknown>;
         setActivities(prev => [...prev, {
-          id: msg.data.id || Date.now().toString(),
-          type: msg.data.type,
-          agentName: msg.data.agent_name,
-          timestamp: new Date(msg.data.timestamp),
-          data: msg.data.data || msg.data,
-          durationMs: msg.data.duration_ms,
+          id: (data.id as string) || Date.now().toString(),
+          type: data.type as string,
+          agentName: data.agent_name as string | undefined,
+          timestamp: new Date(data.timestamp as string),
+          data: (data.data as Record<string, unknown>) || data,
+          durationMs: data.duration_ms as number | undefined,
         }]);
       }
     }

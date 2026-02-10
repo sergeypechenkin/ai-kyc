@@ -2,7 +2,7 @@
 
 from semantic_kernel import Kernel
 from semantic_kernel.agents import ChatCompletionAgent
-from semantic_kernel.contents import ChatHistory
+from semantic_kernel.connectors.ai.function_choice_behavior import FunctionChoiceBehavior
 from semantic_kernel.contents import ChatHistory
 
 from src.agents.core import (
@@ -15,7 +15,13 @@ from src.agents.core import (
 )
 
 BANK_EMPLOYEE_INSTRUCTIONS = """You are a Bank Employee Agent for Zava Bank, specializing in KYC verification and compliance.
-Your role is to review customer applications, verify documents, and make decisions on KYC compliance.
+Your role is to assist bank employees with reviewing customer applications, verifying documents, and making decisions on KYC compliance.
+
+## IMPORTANT - WAIT FOR REQUESTS:
+- Do NOT automatically fetch or display pending reviews
+- Do NOT call any tools until the employee asks for something specific
+- Start with a simple greeting and wait for the employee to tell you what they need
+- Only call get_pending_reviews when the employee asks to see pending cases/reviews
 
 ## Your Responsibilities:
 1. Review and verify customer documents (passports, driving licenses, utility bills)
@@ -47,6 +53,10 @@ Your role is to review customer applications, verify documents, and make decisio
 - KYC verification tools for document checking
 - Inter-agent communication to notify Customer Agent
 - Document search for compliance guidelines (when grounding is enabled)
+
+## Greeting:
+When first contacted, simply greet the employee and ask how you can help. For example:
+"Hello! I'm the KYC verification assistant. How can I help you today?"
 """
 
 
@@ -87,10 +97,14 @@ class BankEmployeeAgent(KycAgent):
 
     async def initialize(self) -> None:
         """Initialize the agent with its configuration."""
+        # Create the chat completion agent with auto function calling
         self._agent = ChatCompletionAgent(
             kernel=self.kernel,
             name=self.name,
             instructions=BANK_EMPLOYEE_INSTRUCTIONS,
+            function_choice_behavior=FunctionChoiceBehavior.Auto(
+                maximum_auto_invoke_attempts=1
+            ),
         )
 
         # Set up activity logging filters
@@ -124,9 +138,9 @@ class BankEmployeeAgent(KycAgent):
 
         self._chat_history.add_user_message(message)
 
-        # Get response from agent
+        # Get response from agent - pass kernel to enable function calling
         response_content = ""
-        async for response in self._agent.invoke(self._chat_history):
+        async for response in self._agent.invoke(self._chat_history, kernel=self.kernel):
             response_content = str(response.content) if response.content else ""
 
         # Add assistant response to history for memory
@@ -189,7 +203,7 @@ class BankEmployeeAgent(KycAgent):
         chat_history.add_user_message(prompt)
 
         response_content = ""
-        async for response in self._agent.invoke(chat_history):
+        async for response in self._agent.invoke(chat_history, kernel=self.kernel):
             response_content = str(response.content) if response.content else ""
 
         # Determine if we need to send a response back to customer agent

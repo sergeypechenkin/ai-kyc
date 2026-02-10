@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     azure_search_endpoint: str = Field(default="")
     azure_search_index_name: str = Field(default="kyc-documents")
 
+    # Azure Document Intelligence
+    azure_document_intelligence_endpoint: str = Field(default="")
+
     # Azure AD Client ID (for Service Principal authentication, optional)
     azure_client_id: str = Field(default="")
 
@@ -45,8 +48,17 @@ class Settings(BaseSettings):
     def azure_search_configured(self) -> bool:
         return bool(self.azure_search_endpoint)
 
+    @property
+    def azure_document_intelligence_configured(self) -> bool:
+        return bool(self.azure_document_intelligence_endpoint)
+
 
 @lru_cache
 def get_settings() -> Settings:
     """Get cached settings instance."""
     return Settings()
+
+
+def clear_settings_cache() -> None:
+    """Clear the settings cache (for testing or reloading)."""
+    get_settings.cache_clear()

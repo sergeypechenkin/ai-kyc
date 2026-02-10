@@ -50,19 +50,44 @@ async def set_grounding_config(config: GroundingConfig):
     """Enable or disable document grounding.
 
     When enabled, agents will use Azure AI Search to ground their
-    responses in bank documentation.
+    responses in indexed bank documentation.
+    When disabled, agents will use their base knowledge only.
+    
+    Note: Changing grounding state clears chat history to ensure
+    the agent doesn't reference previous grounded/ungrounded responses.
     """
     state = get_app_state()
     settings = get_settings()
 
     # Check if Azure Search is configured when trying to enable
     if config.enabled and not settings.azure_search_configured:
-        # Allow enabling with mock data for demo
-        pass  # Mock search will be used
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot enable document grounding: Azure Search is not configured"
+        )
+
+    # Clear chat history when toggling grounding to avoid mixing grounded/ungrounded context
+    if state.grounding_enabled != config.enabled:
+        for agent in state.registry.get_all():
+            agent.clear_history()
 
     state.grounding_enabled = config.enabled
 
     return GroundingConfig(enabled=state.grounding_enabled)
+
+
+@router.post("/clear-history")
+async def clear_chat_history():
+    """Clear chat history for all agents.
+    
+    Resets the conversation memory so agents start fresh.
+    """
+    state = get_app_state()
+    
+    for agent in state.registry.get_all():
+        agent.clear_history()
+    
+    return {"status": "success", "message": "Chat history cleared for all agents"}
 
 
 @router.post("/reload-data")

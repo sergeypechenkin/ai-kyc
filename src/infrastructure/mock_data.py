@@ -284,3 +284,148 @@ class CustomerRepository:
         ]
 
         return matches.to_dict("records")
+
+    def create_customer(self, customer_data: dict[str, Any]) -> dict[str, Any]:
+        """Create a new customer record.
+
+        Args:
+            customer_data: Customer data with fields: first_name, last_name, email,
+                          phone, address, date_of_birth, nationality
+
+        Returns:
+            Created customer dict with generated ID
+        """
+        # Generate new customer ID
+        if self._customers.empty:
+            new_id = "C001"
+        else:
+            max_id = self._customers["id"].str.extract(r"C(\d+)").astype(int).max()[0]
+            new_id = f"C{max_id + 1:03d}"
+
+        customer = {
+            "id": new_id,
+            "first_name": customer_data.get("first_name", ""),
+            "last_name": customer_data.get("last_name", ""),
+            "email": customer_data.get("email", ""),
+            "phone": customer_data.get("phone", ""),
+            "address": customer_data.get("address", ""),
+            "date_of_birth": customer_data.get("date_of_birth", ""),
+            "nationality": customer_data.get("nationality", ""),
+        }
+
+        # Add to DataFrame
+        self._customers = pd.concat(
+            [self._customers, pd.DataFrame([customer])],
+            ignore_index=True,
+        )
+
+        # Save to CSV
+        self._save_csv("customers.csv", self._customers)
+
+        return customer
+
+    def create_account(
+        self,
+        customer_id: str,
+        account_type: str = "current",
+        initial_balance: float = 0.0,
+    ) -> dict[str, Any]:
+        """Create a new account for a customer.
+
+        Args:
+            customer_id: Customer ID
+            account_type: Type of account (current, savings, business)
+            initial_balance: Initial balance
+
+        Returns:
+            Created account dict
+        """
+        import random
+
+        # Generate new account ID
+        if self._accounts.empty:
+            new_id = "A001"
+        else:
+            max_id = self._accounts["id"].str.extract(r"A(\d+)").astype(int).max()[0]
+            new_id = f"A{max_id + 1:03d}"
+
+        # Generate IBAN-like account number
+        random_digits = "".join([str(random.randint(0, 9)) for _ in range(14)])
+        account_number = f"IE29ZAVA9311{random_digits}"
+
+        account = {
+            "id": new_id,
+            "customer_id": customer_id,
+            "account_type": account_type,
+            "account_number": account_number,
+            "balance": str(initial_balance),
+            "open_date": datetime.now().strftime("%Y-%m-%d"),
+            "status": "pending_kyc",
+        }
+
+        # Add to DataFrame
+        self._accounts = pd.concat(
+            [self._accounts, pd.DataFrame([account])],
+            ignore_index=True,
+        )
+
+        # Save to CSV
+        self._save_csv("accounts.csv", self._accounts)
+
+        return account
+
+    def add_kyc_document(
+        self,
+        customer_id: str,
+        doc_type: str,
+        file_path: str,
+        expiry_date: str = "",
+    ) -> dict[str, Any]:
+        """Add a KYC document record for a customer.
+
+        Args:
+            customer_id: Customer ID
+            doc_type: Document type (passport, driving_license, utility_bill)
+            file_path: Path where document is stored
+            expiry_date: Document expiry date (optional)
+
+        Returns:
+            Created document record
+        """
+        # Generate new document ID
+        if self._documents.empty:
+            new_id = "D001"
+        else:
+            max_id = self._documents["id"].str.extract(r"D(\d+)").astype(int).max()[0]
+            new_id = f"D{max_id + 1:03d}"
+
+        document = {
+            "id": new_id,
+            "customer_id": customer_id,
+            "doc_type": doc_type,
+            "status": "pending",
+            "file_path": file_path,
+            "upload_date": datetime.now().strftime("%Y-%m-%d"),
+            "expiry_date": expiry_date or "",
+        }
+
+        # Add to DataFrame
+        self._documents = pd.concat(
+            [self._documents, pd.DataFrame([document])],
+            ignore_index=True,
+        )
+
+        # Save to CSV
+        self._save_csv("kyc_documents.csv", self._documents)
+
+        return document
+
+    def _save_csv(self, filename: str, df: pd.DataFrame) -> None:
+        """Save DataFrame to CSV file.
+
+        Args:
+            filename: Name of the CSV file
+            df: DataFrame to save
+        """
+        filepath = self._data_dir / filename
+        df.to_csv(filepath, index=False)
