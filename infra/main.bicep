@@ -24,6 +24,8 @@ var openAiName = '${baseName}-openai-${uniqueSuffix}'
 var searchName = '${baseName}-search-${uniqueSuffix}'
 var appServicePlanName = '${baseName}-plan-${environment}'
 var appServiceName = '${baseName}-api-${environment}'
+var logAnalyticsName = '${baseName}-logs-${environment}'
+var appInsightsName = '${baseName}-appi-${environment}'
 
 // Azure OpenAI Account
 resource openAi 'Microsoft.CognitiveServices/accounts@2023-10-01-preview' = {
@@ -71,6 +73,34 @@ resource search 'Microsoft.Search/searchServices@2023-11-01' = {
   }
 }
 
+// Log Analytics Workspace (for Application Insights)
+resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
+  name: logAnalyticsName
+  location: location
+  properties: {
+    sku: {
+      name: 'PerGB2018'
+    }
+    retentionInDays: 30
+    features: {
+      enableLogAccessUsingOnlyResourcePermissions: true
+    }
+  }
+}
+
+// Application Insights (for agent tracing and monitoring)
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: appInsightsName
+  location: location
+  kind: 'web'
+  properties: {
+    Application_Type: 'web'
+    WorkspaceResourceId: logAnalytics.id
+    publicNetworkAccessForIngestion: 'Enabled'
+    publicNetworkAccessForQuery: 'Enabled'
+  }
+}
+
 // App Service Plan (optional - for hosting the API)
 resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
   name: appServicePlanName
@@ -114,6 +144,10 @@ resource appService 'Microsoft.Web/sites@2023-01-01' = {
           name: 'APP_ENV'
           value: environment
         }
+        {
+          name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+          value: appInsights.properties.ConnectionString
+        }
       ]
     }
   }
@@ -125,3 +159,6 @@ output openAiName string = openAi.name
 output searchEndpoint string = 'https://${search.name}.search.windows.net'
 output searchName string = search.name
 output appServiceUrl string = 'https://${appService.properties.defaultHostName}'
+output appInsightsConnectionString string = appInsights.properties.ConnectionString
+output appInsightsInstrumentationKey string = appInsights.properties.InstrumentationKey
+output logAnalyticsWorkspaceId string = logAnalytics.properties.customerId

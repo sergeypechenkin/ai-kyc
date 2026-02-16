@@ -1,16 +1,20 @@
-import { useState, useRef, useCallback } from 'react';
-import { Upload, X, FileText, Loader2, Check, AlertCircle, User, Calendar, MapPin, CreditCard } from 'lucide-react';
+import { useState, useRef, useCallback, useMemo } from 'react';
+import { Upload, X, FileText, Loader2, Check, AlertCircle, AlertTriangle, User, Calendar, MapPin, CreditCard } from 'lucide-react';
 
 interface ExtractedData {
-  first_name: string;
-  last_name: string;
+  full_name: string;
+  first_name?: string;  // Deprecated - kept for backwards compatibility
+  last_name?: string;   // Deprecated - kept for backwards compatibility
   date_of_birth: string;
   nationality: string;
   address: string;
   document_number: string;
   expiry_date: string;
   document_type: string;
+  validation_errors?: string[];
+  validation_warnings?: string[];
   error?: string;
+  is_id_document: boolean;  // True for ID docs (show DOB, Nationality, Expiry), False for address docs (show Address only)
 }
 
 interface DocumentUploadProps {
@@ -26,9 +30,12 @@ export default function DocumentUpload({ onCustomerCreated, variant = 'employee'
   const [status, setStatus] = useState<UploadStatus>('idle');
   const [error, setError] = useState<string | null>(null);
   const [extractedData, setExtractedData] = useState<ExtractedData | null>(null);
+  
+  // Generate unique session ID for document validation
+  const sessionId = useMemo(() => `upload-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, []);
+  
   const [formData, setFormData] = useState({
-    first_name: '',
-    last_name: '',
+    full_name: '',
     email: '',
     phone: '',
     address: '',
@@ -46,8 +53,7 @@ export default function DocumentUpload({ onCustomerCreated, variant = 'employee'
     setExtractedData(null);
     setCreatedAccount(null);
     setFormData({
-      first_name: '',
-      last_name: '',
+      full_name: '',
       email: '',
       phone: '',
       address: '',
@@ -56,6 +62,10 @@ export default function DocumentUpload({ onCustomerCreated, variant = 'employee'
       document_type: 'passport',
       document_number: '',
     });
+    // Reset file input value
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
   };
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -82,6 +92,8 @@ export default function DocumentUpload({ onCustomerCreated, variant = 'employee'
     if (files && files.length > 0) {
       handleFileUpload(files[0]);
     }
+    // Reset input value so same file can be selected again
+    e.target.value = '';
   };
 
   const handleFileUpload = async (file: File) => {
@@ -99,6 +111,7 @@ export default function DocumentUpload({ onCustomerCreated, variant = 'employee'
     const formDataUpload = new FormData();
     formDataUpload.append('file', file);
     formDataUpload.append('doc_type', formData.document_type);
+    formDataUpload.append('session_id', sessionId);
 
     try {
       const response = await fetch('/api/documents/upload', {
@@ -118,8 +131,7 @@ export default function DocumentUpload({ onCustomerCreated, variant = 'employee'
         // Pre-fill form with extracted data
         setFormData(prev => ({
           ...prev,
-          first_name: result.extracted_data.first_name || prev.first_name,
-          last_name: result.extracted_data.last_name || prev.last_name,
+          full_name: result.extracted_data.full_name || prev.full_name,
           date_of_birth: result.extracted_data.date_of_birth || prev.date_of_birth,
           nationality: result.extracted_data.nationality || prev.nationality,
           address: result.extracted_data.address || prev.address,
@@ -136,8 +148,8 @@ export default function DocumentUpload({ onCustomerCreated, variant = 'employee'
 
   const handleCreateAccount = async () => {
     // Validate required fields
-    if (!formData.first_name || !formData.last_name || !formData.email) {
-      setError('Please fill in all required fields (First Name, Last Name, Email)');
+    if (!formData.full_name || !formData.email) {
+      setError('Please fill in all required fields (Name, Email)');
       return;
     }
 
@@ -201,6 +213,7 @@ export default function DocumentUpload({ onCustomerCreated, variant = 'employee'
   if (!isOpen) {
     return (
       <button
+        type="button"
         onClick={() => { setIsOpen(true); resetState(); }}
         className={`flex items-center gap-2 px-4 py-2 ${colors.primary} text-white rounded-lg ${colors.primaryHover} transition-colors`}
       >
@@ -220,6 +233,7 @@ export default function DocumentUpload({ onCustomerCreated, variant = 'employee'
             {headerTitle}
           </h2>
           <button
+            type="button"
             onClick={() => setIsOpen(false)}
             className={`p-1 ${colors.primaryHover.replace('hover:', '')} rounded-full transition-colors`}
           >
@@ -238,8 +252,8 @@ export default function DocumentUpload({ onCustomerCreated, variant = 'employee'
               <h3 className="text-xl font-semibold text-gray-800 mb-2">Account Created Successfully!</h3>
               <p className="text-gray-600 mb-4">
                 {variant === 'customer' 
-                  ? `Welcome ${formData.first_name}! Your account has been created.`
-                  : `Customer ${formData.first_name} ${formData.last_name} has been registered.`
+                  ? `Welcome ${formData.full_name}! Your account has been created.`
+                  : `Customer ${formData.full_name} has been registered.`
                 }
               </p>
               <div className="bg-gray-50 rounded-lg p-4 inline-block text-left">
@@ -250,6 +264,7 @@ export default function DocumentUpload({ onCustomerCreated, variant = 'employee'
               </div>
               <div className="mt-6">
                 <button
+                  type="button"
                   onClick={() => { setIsOpen(false); resetState(); }}
                   className={`px-6 py-2 ${colors.primary} text-white rounded-lg ${colors.primaryHover} transition-colors`}
                 >
@@ -338,121 +353,172 @@ export default function DocumentUpload({ onCustomerCreated, variant = 'employee'
                 </div>
               )}
 
-              {/* Customer Information Form */}
-              {(status === 'extracted' || status === 'creating' || status === 'error') && (
-                <div className="mt-6 space-y-4">
-                  <h3 className="font-medium text-gray-800 flex items-center gap-2">
-                    <FileText className="w-4 h-4" />
-                    Customer Information
-                  </h3>
+              {/* Validation Errors - require re-upload */}
+              {extractedData?.validation_errors && extractedData.validation_errors.length > 0 && (
+                <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg space-y-2">
+                  <p className="font-medium text-red-700 text-sm flex items-center gap-1">
+                    <AlertCircle className="w-4 h-4" /> Document Validation Failed
+                  </p>
+                  {extractedData.validation_errors.map((err, idx) => (
+                    <p key={idx} className="text-sm text-red-600 ml-5">• {err}</p>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="mt-2 w-full flex items-center justify-center gap-2 px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm font-medium"
+                  >
+                    <Upload className="w-4 h-4" />
+                    Upload Different Document
+                  </button>
+                </div>
+              )}
 
-                  <div className="grid grid-cols-2 gap-4">
+              {/* Validation Warnings */}
+              {extractedData?.validation_warnings && extractedData.validation_warnings.length > 0 && (
+                <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg space-y-1">
+                  <p className="font-medium text-amber-700 text-sm flex items-center gap-1">
+                    <AlertTriangle className="w-4 h-4" /> Validation Warnings
+                  </p>
+                  {extractedData.validation_warnings.map((warn, idx) => (
+                    <p key={idx} className="text-sm text-amber-600 ml-5">• {warn}</p>
+                  ))}
+                </div>
+              )}
+
+              {/* Customer Information Form - only show if no critical validation errors */}
+              {(status === 'extracted' || status === 'creating' || status === 'error') && 
+               (!extractedData?.validation_errors || extractedData.validation_errors.length === 0) && (
+                <div className="mt-6 space-y-6">
+                  {/* SECTION 1: Extracted Information */}
+                  <div className="space-y-4">
+                    <h3 className="font-medium text-gray-800 flex items-center gap-2">
+                      <FileText className="w-4 h-4" />
+                      Extracted Information
+                    </h3>
+
+                  {/* Always show: Full Name */}
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
-                        First Name <span className="text-red-500">*</span>
+                        Full Name <span className="text-red-500">*</span>
                       </label>
                       <div className="relative">
                         <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                         <input
                           type="text"
-                          value={formData.first_name}
-                          onChange={(e) => handleInputChange('first_name', e.target.value)}
+                          value={formData.full_name}
+                          onChange={(e) => handleInputChange('full_name', e.target.value)}
                           className="w-full pl-10 pr-3 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
-                          placeholder="John"
+                          placeholder="John Smith"
                         />
                       </div>
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Last Name <span className="text-red-500">*</span>
+
+                    {/* ID Document Fields - only show for identity documents (passport, license, ID card) */}
+                    {extractedData?.is_id_document && (
+                      <>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                              <Calendar className="inline w-4 h-4 mr-1" />
+                              Date of Birth
+                            </label>
+                            <input
+                              type="date"
+                              value={formData.date_of_birth}
+                              onChange={(e) => handleInputChange('date_of_birth', e.target.value)}
+                              className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Nationality</label>
+                            <input
+                              type="text"
+                              value={formData.nationality}
+                              onChange={(e) => handleInputChange('nationality', e.target.value)}
+                              className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                              placeholder="Irish"
+                            />
+                          </div>
+                        </div>
+
+                        {extractedData?.expiry_date && (
+                          <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                            <p className="text-sm font-medium text-blue-900">Document Valid Until</p>
+                            <p className="text-sm text-blue-700 mt-1">
+                              {new Date(extractedData.expiry_date).toLocaleDateString()}
+                            </p>
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    {/* Address Document Fields - only show for proof of address documents */}
+                    {!extractedData?.is_id_document && extractedData?.address && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          <MapPin className="inline w-4 h-4 mr-1" />
+                          Address
+                        </label>
+                        <input
+                          type="text"
+                          value={formData.address}
+                          onChange={(e) => handleInputChange('address', e.target.value)}
+                          className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                          placeholder="123 Main Street, Dublin 2"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* SECTION 2: Contact Information (manual entry) */}
+                  <div className="border-t pt-4 space-y-4">
+                    <h3 className="font-medium text-gray-800 flex items-center gap-2">
+                      <User className="w-4 h-4" />
+                      Contact Information
+                    </h3>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Email <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="email"
+                          value={formData.email}
+                          onChange={(e) => handleInputChange('email', e.target.value)}
+                          className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                          placeholder="john.smith@email.com"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
+                        <input
+                          type="tel"
+                          value={formData.phone}
+                          onChange={(e) => handleInputChange('phone', e.target.value)}
+                          className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                          placeholder="+353 87 123 4567"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* SECTION 3: Additional Address (if not from proof of address, or if using ID doc) */}
+                  {!extractedData?.address && (
+                    <div className="border-t pt-4">
+                      <label className="block text-sm font-medium text-gray-700 mb-3">
+                        <MapPin className="inline w-4 h-4 mr-1" />
+                        Address
                       </label>
                       <input
                         type="text"
-                        value={formData.last_name}
-                        onChange={(e) => handleInputChange('last_name', e.target.value)}
+                        value={formData.address}
+                        onChange={(e) => handleInputChange('address', e.target.value)}
                         className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
-                        placeholder="Smith"
+                        placeholder="123 Main Street, Dublin 2"
                       />
                     </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Email <span className="text-red-500">*</span>
-                      </label>
-                      <input
-                        type="email"
-                        value={formData.email}
-                        onChange={(e) => handleInputChange('email', e.target.value)}
-                        className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
-                        placeholder="john.smith@email.com"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
-                      <input
-                        type="tel"
-                        value={formData.phone}
-                        onChange={(e) => handleInputChange('phone', e.target.value)}
-                        className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
-                        placeholder="+353 87 123 4567"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      <MapPin className="inline w-4 h-4 mr-1" />
-                      Address
-                    </label>
-                    <input
-                      type="text"
-                      value={formData.address}
-                      onChange={(e) => handleInputChange('address', e.target.value)}
-                      className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
-                      placeholder="123 Main Street, Dublin 2"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        <Calendar className="inline w-4 h-4 mr-1" />
-                        Date of Birth
-                      </label>
-                      <input
-                        type="date"
-                        value={formData.date_of_birth}
-                        onChange={(e) => handleInputChange('date_of_birth', e.target.value)}
-                        className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Nationality</label>
-                      <input
-                        type="text"
-                        value={formData.nationality}
-                        onChange={(e) => handleInputChange('nationality', e.target.value)}
-                        className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
-                        placeholder="Irish"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      <CreditCard className="inline w-4 h-4 mr-1" />
-                      Document Number
-                    </label>
-                    <input
-                      type="text"
-                      value={formData.document_number}
-                      onChange={(e) => handleInputChange('document_number', e.target.value)}
-                      className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
-                      placeholder="P12345678"
-                    />
-                  </div>
+                  )}
                 </div>
               )}
             </>
@@ -463,13 +529,16 @@ export default function DocumentUpload({ onCustomerCreated, variant = 'employee'
         {status !== 'success' && (
           <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
             <button
+              type="button"
               onClick={() => setIsOpen(false)}
               className="px-4 py-2 text-gray-600 hover:text-gray-800 transition-colors"
             >
               Cancel
             </button>
-            {(status === 'extracted' || status === 'error' || status === 'creating') && (
+            {(status === 'extracted' || status === 'error' || status === 'creating') && 
+             (!extractedData?.validation_errors || extractedData.validation_errors.length === 0) && (
               <button
+                type="button"
                 onClick={handleCreateAccount}
                 disabled={status === 'creating'}
                 className={`px-6 py-2 ${colors.primary} text-white rounded-lg ${colors.primaryHover} disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors flex items-center gap-2`}

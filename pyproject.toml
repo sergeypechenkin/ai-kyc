@@ -1,11 +1,10 @@
 [project]
 name = "ai-kyc"
-version = "0.1.0"
-description = "KYC Demo Application with Multi-Agent Architecture using Semantic Kernel"
+version = "0.2.0"
+description = "KYC Demo Application with Multi-Agent Architecture"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "semantic-kernel>=1.0.0",
     "fastapi>=0.110.0",
     "uvicorn[standard]>=0.27.0",
     "websockets>=12.0",
@@ -18,9 +17,27 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "httpx>=0.26.0",
     "python-multipart>=0.0.6",
+    "python-dateutil>=2.8.0",
+    "Pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]
+# Legacy Semantic Kernel implementation
+sk = [
+    "semantic-kernel>=1.0.0",
+]
+# Microsoft Agent Framework implementation (recommended)
+maf = [
+    "agent-framework-azure-ai==1.0.0b260107",
+    "agent-framework-core==1.0.0b260107",
+    "azure-ai-agentserver-agentframework==1.0.0b10",
+    "azure-ai-agentserver-core==1.0.0b10",
+    "azure-ai-projects>=1.0.0b1",
+    "azure-monitor-opentelemetry>=1.2.0",
+    "opentelemetry-instrumentation-openai>=0.30.0",
+    "agent-dev-cli",
+    "debugpy",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",

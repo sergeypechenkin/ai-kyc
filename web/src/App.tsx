@@ -130,12 +130,12 @@ function App() {
       <header className="bg-zava-purple text-white shadow-lg">
         <div className="max-w-full mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center">
-              <span className="text-zava-purple font-bold text-lg">ZB</span>
+            <div className="w-12 h-12 bg-white rounded-lg flex items-center justify-center">
+              <span className="text-zava-purple font-bold text-xl">ZB</span>
             </div>
             <div>
-              <h1 className="text-xl font-semibold">Zava Bank AI-KYC</h1>
-              <p className="text-purple-200 text-sm">Multi-Agent KYC System</p>
+              <h1 className="text-2xl font-semibold">Zava Bank AI-KYC</h1>
+              <p className="text-purple-200 text-base">Multi-Agent KYC System</p>
             </div>
           </div>
           
@@ -159,9 +159,9 @@ function App() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-[calc(100vh-120px)]">
           {/* Customer Chat */}
           <div className="bg-white rounded-xl shadow-md overflow-hidden flex flex-col">
-            <div className="bg-blue-600 text-white px-4 py-3">
-              <h2 className="font-semibold">Customer Chat</h2>
-              <p className="text-blue-200 text-sm">Talk to the Customer Service Agent</p>
+            <div className="bg-blue-600 text-white px-4 py-4">
+              <h2 className="font-semibold text-lg">Customer Chat</h2>
+              <p className="text-blue-200 text-base">Talk to the Customer Service Agent</p>
             </div>
             <CustomerChat
               messages={customerMessages}
@@ -172,9 +172,9 @@ function App() {
 
           {/* Employee Chat */}
           <div className="bg-white rounded-xl shadow-md overflow-hidden flex flex-col">
-            <div className="bg-green-600 text-white px-4 py-3">
-              <h2 className="font-semibold">Bank Employee Chat</h2>
-              <p className="text-green-200 text-sm">Bank Employee Agent Interface</p>
+            <div className="bg-green-600 text-white px-4 py-4">
+              <h2 className="font-semibold text-lg">Bank Employee Chat</h2>
+              <p className="text-green-200 text-base">Bank Employee Agent Interface</p>
             </div>
             <EmployeeChat
               messages={employeeMessages}
@@ -185,9 +185,9 @@ function App() {
 
           {/* Activity Log */}
           <div className="bg-white rounded-xl shadow-md overflow-hidden flex flex-col">
-            <div className="bg-gray-800 text-white px-4 py-3">
-              <h2 className="font-semibold">Activity Log</h2>
-              <p className="text-gray-400 text-sm">Agent internals & events</p>
+            <div className="bg-gray-800 text-white px-4 py-4">
+              <h2 className="font-semibold text-lg">Activity Log</h2>
+              <p className="text-gray-400 text-base">Agent internals & events</p>
             </div>
             <ActivityLog 
               activities={activities}

@@ -19,9 +19,15 @@ DOCUMENTS_DIR = Path(__file__).parent.parent.parent.parent / "data" / "customer-
 
 
 class ExtractedData(BaseModel):
-    """Extracted data from a document."""
-    first_name: str = ""
-    last_name: str = ""
+    """Extracted data from a document.
+    
+    Different fields are populated based on document type:
+    - ID documents (passport, driving_license, id_card): full_name, date_of_birth, nationality, expiry_date
+    - Address documents (utility_bill, bank_statement, etc.): full_name, address
+    """
+    full_name: str = ""  # Combined first name + last name
+    first_name: str = ""  # Deprecated - use full_name instead
+    last_name: str = ""  # Deprecated - use full_name instead
     date_of_birth: str = ""
     nationality: str = ""
     address: str = ""
@@ -31,7 +37,10 @@ class ExtractedData(BaseModel):
     document_date: str = ""  # Date of the document (for proof of address)
     is_valid_timeframe: bool = True  # Whether document is within required timeframe
     validity_message: str = ""  # Message about document validity
+    validation_errors: list[str] = []  # Critical validation errors
+    validation_warnings: list[str] = []  # Non-critical warnings (e.g., name mismatch)
     error: str | None = None
+    is_id_document: bool = False  # True for ID docs, False for address docs
 
 
 class DocumentUploadResponse(BaseModel):
@@ -44,8 +53,7 @@ class DocumentUploadResponse(BaseModel):
 
 class CustomerCreateRequest(BaseModel):
     """Request to create a new customer."""
-    first_name: str
-    last_name: str
+    full_name: str
     email: str
     phone: str = ""
     address: str = ""
@@ -67,6 +75,7 @@ async def upload_document(
     file: UploadFile = File(...),
     doc_type: str = Form(default="auto"),
     customer_id: str = Form(default=""),
+    session_id: str = Form(default="default"),
 ):
     """Upload a document and extract information using Document Intelligence.
 
@@ -74,6 +83,7 @@ async def upload_document(
         file: The document file (PDF or image)
         doc_type: Type of document (passport, driving_license, utility_bill) or "auto" for auto-detection
         customer_id: Optional customer ID if document is for existing customer
+        session_id: Session ID for cross-document validation
     """
     state = get_app_state()
 
@@ -113,6 +123,19 @@ async def upload_document(
         
         logger.info(f"Extraction result: {result}")
         extracted_data = ExtractedData(**result)
+        
+        # Perform cross-document validation
+        if state.document_validation:
+            validation_result = state.document_validation.validate_document(
+                session_id=session_id,
+                extracted_data=result
+            )
+            extracted_data.validation_errors = validation_result.errors
+            extracted_data.validation_warnings = validation_result.warnings
+            
+            # Mark as invalid if there are validation errors
+            if not validation_result.is_valid:
+                extracted_data.is_valid_timeframe = False
     else:
         logger.warning("Document Intelligence not available")
         # Return empty extraction if service not available
@@ -147,10 +170,15 @@ async def create_customer_with_account(request: CustomerCreateRequest):
             detail=f"Customer with email {request.email} already exists"
         )
 
+    # Split full_name into first and last name for backend storage
+    name_parts = request.full_name.strip().rsplit(' ', 1) if request.full_name else ['', '']
+    first_name = name_parts[0]
+    last_name = name_parts[1] if len(name_parts) > 1 else ''
+
     # Create customer
     customer = state.customer_repository.create_customer({
-        "first_name": request.first_name,
-        "last_name": request.last_name,
+        "first_name": first_name,
+        "last_name": last_name,
         "email": request.email,
         "phone": request.phone,
         "address": request.address,

@@ -103,46 +103,46 @@ function ActivityItem({ activity }: { activity: ActivityEvent }) {
     <div className="border-b border-gray-100 last:border-0 animate-slide-in">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full px-3 py-2 flex items-start gap-2 hover:bg-gray-50 transition-colors text-left"
+        className="w-full px-3 py-2.5 flex items-start gap-2 hover:bg-gray-50 transition-colors text-left"
       >
         <div className={`p-1.5 rounded ${config.bgColor} ${config.color} mt-0.5`}>
-          <Icon className="w-3 h-3" />
+          <Icon className="w-4 h-4" />
         </div>
         
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="font-medium text-sm text-gray-900 truncate">
+            <span className="font-medium text-base text-gray-900 truncate">
               {title}
             </span>
             {activity.durationMs && (
-              <span className="text-xs text-gray-400">
+              <span className="text-sm text-gray-400">
                 {activity.durationMs.toFixed(0)}ms
               </span>
             )}
           </div>
           {subtitle && (
-            <span className="text-xs text-gray-500 truncate block">{subtitle}</span>
+            <span className="text-sm text-gray-500 truncate block">{subtitle}</span>
           )}
           {activity.agentName && !subtitle && (
-            <span className="text-xs text-gray-500">{activity.agentName}</span>
+            <span className="text-sm text-gray-500">{activity.agentName}</span>
           )}
         </div>
 
         <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-400">
+          <span className="text-sm text-gray-400">
             {activity.timestamp.toLocaleTimeString()}
           </span>
           {expanded ? (
-            <ChevronDown className="w-4 h-4 text-gray-400" />
+            <ChevronDown className="w-5 h-5 text-gray-400" />
           ) : (
-            <ChevronRight className="w-4 h-4 text-gray-400" />
+            <ChevronRight className="w-5 h-5 text-gray-400" />
           )}
         </div>
       </button>
 
       {expanded && (
         <div className="px-3 pb-3 pl-10">
-          <pre className="text-xs bg-gray-900 text-gray-100 p-3 rounded-lg overflow-x-auto">
+          <pre className="text-sm bg-gray-900 text-gray-100 p-3 rounded-lg overflow-x-auto">
             {JSON.stringify(activity.data, null, 2)}
           </pre>
         </div>
@@ -174,18 +174,18 @@ export default function ActivityLog({ activities, isConnected }: ActivityLogProp
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
       {/* Connection status */}
-      <div className={`px-3 py-1 text-xs flex items-center justify-between ${
+      <div className={`px-3 py-1.5 text-sm flex items-center justify-between ${
         isConnected ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
       }`}>
         <div className="flex items-center gap-1">
           {isConnected ? (
             <>
-              <Wifi className="w-3 h-3" />
+              <Wifi className="w-4 h-4" />
               Connected
             </>
           ) : (
             <>
-              <WifiOff className="w-3 h-3" />
+              <WifiOff className="w-4 h-4" />
               Disconnected
             </>
           )}
@@ -201,9 +201,9 @@ export default function ActivityLog({ activities, isConnected }: ActivityLogProp
       >
         {activities.length === 0 && (
           <div className="text-center text-gray-400 mt-8 px-4">
-            <Clock className="w-12 h-12 mx-auto mb-2 opacity-50" />
-            <p>No activity yet</p>
-            <p className="text-sm mt-1">Agent events will appear here in real-time</p>
+            <Clock className="w-16 h-16 mx-auto mb-3 opacity-50" />
+            <p className="text-lg">No activity yet</p>
+            <p className="text-base mt-2">Agent events will appear here in real-time</p>
           </div>
         )}
 
@@ -213,7 +213,7 @@ export default function ActivityLog({ activities, isConnected }: ActivityLogProp
       </div>
 
       {/* Footer with auto-scroll indicator */}
-      <div className="px-3 py-2 border-t bg-gray-50 flex items-center justify-between text-xs">
+      <div className="px-3 py-2 border-t bg-gray-50 flex items-center justify-between text-sm">
         <button
           onClick={() => setAutoScroll(!autoScroll)}
           className={`flex items-center gap-1 ${
@@ -222,12 +222,12 @@ export default function ActivityLog({ activities, isConnected }: ActivityLogProp
         >
           {autoScroll ? (
             <>
-              <CheckCircle className="w-3 h-3" />
+              <CheckCircle className="w-4 h-4" />
               Auto-scroll on
             </>
           ) : (
             <>
-              <XCircle className="w-3 h-3" />
+              <XCircle className="w-4 h-4" />
               Auto-scroll off
             </>
           )}
@@ -237,7 +237,7 @@ export default function ActivityLog({ activities, isConnected }: ActivityLogProp
           onClick={() => window.location.reload()}
           className="text-gray-500 hover:text-gray-700 flex items-center gap-1"
         >
-          <Trash2 className="w-3 h-3" />
+          <Trash2 className="w-4 h-4" />
           Clear
         </button>
       </div>

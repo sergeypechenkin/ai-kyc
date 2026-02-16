@@ -19,6 +19,7 @@ from src.infrastructure.config import get_settings
 from src.infrastructure.mock_data import CustomerRepository
 from src.infrastructure.document_search import DocumentSearchService
 from src.infrastructure.document_intelligence import DocumentIntelligenceService
+from src.infrastructure.document_validation import DocumentValidationService
 from src.plugins import (
     CustomerDataPlugin,
     DocumentSearchPlugin,
@@ -46,6 +47,7 @@ class AppState:
         self.document_search: DocumentSearchService | None = None
         self.document_search_plugin: DocumentSearchPlugin | None = None
         self.document_intelligence: DocumentIntelligenceService | None = None
+        self.document_validation: DocumentValidationService | None = None
         self._grounding_enabled = self.settings.enable_document_grounding
         self._activity_subscribers: list[asyncio.Queue] = []
         self._initialized = False
@@ -74,6 +76,7 @@ class AppState:
         self.customer_repository = CustomerRepository()
         self.document_search = DocumentSearchService()
         self.document_intelligence = DocumentIntelligenceService()
+        self.document_validation = DocumentValidationService()
 
         # Initialize activity logger with broadcast callback
         self.activity_logger = ActivityLogger(

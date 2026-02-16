@@ -4,15 +4,51 @@
 
 :root {
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
+  line-height: 1.6;
   font-weight: 400;
   color: #213547;
   background-color: #f5f5f5;
+  font-size: 16px;
 }
 
+/* Larger base text */
 body {
   margin: 0;
   min-height: 100vh;
+  font-size: 1rem;
+}
+
+/* Increase text sizes globally */
+@layer base {
+  html {
+    font-size: 16px;
+  }
+  
+  p, span, div {
+    @apply text-base;
+  }
+  
+  h1 {
+    @apply text-2xl font-bold;
+  }
+  
+  h2 {
+    @apply text-xl font-semibold;
+  }
+  
+  h3 {
+    @apply text-lg font-medium;
+  }
+}
+
+/* Chat messages larger text */
+.chat-message {
+  @apply text-base leading-relaxed;
+}
+
+/* Activity log larger text */
+.activity-item {
+  @apply text-sm;
 }
 
 /* Custom scrollbar */
@@ -65,4 +101,44 @@ body {
 
 .animate-slide-in {
   animation: slideIn 0.2s ease-out;
+}
+
+/* Print styles for Compliance Review Form */
+@media print {
+  body {
+    background: white !important;
+    font-size: 12pt;
+  }
+  
+  /* Hide everything except the form */
+  .print\:hidden {
+    display: none !important;
+  }
+  
+  .print\:block {
+    display: block !important;
+  }
+  
+  .print\:shadow-none {
+    box-shadow: none !important;
+  }
+  
+  .print\:max-w-none {
+    max-width: none !important;
+  }
+  
+  .print\:rounded-none {
+    border-radius: 0 !important;
+  }
+  
+  /* Ensure borders print */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  
+  /* Page breaks */
+  .page-break {
+    page-break-before: always;
+  }
 }

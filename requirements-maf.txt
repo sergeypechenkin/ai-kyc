@@ -1,0 +1,26 @@
+# Microsoft Agent Framework - pin versions to avoid breaking changes
+agent-framework-azure-ai==1.0.0b260107
+agent-framework-core==1.0.0b260107
+
+# Agent Server for HTTP hosting
+azure-ai-agentserver-agentframework==1.0.0b10
+azure-ai-agentserver-core==1.0.0b10
+
+# Development tools
+agent-dev-cli
+debugpy
+
+# Existing dependencies
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+websockets>=12.0
+pandas>=2.2.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+azure-identity>=1.15.0
+azure-search-documents>=11.4.0
+openai>=1.12.0
+python-dotenv>=1.0.0
+httpx>=0.26.0
+python-multipart>=0.0.6
+azure-ai-documentintelligence>=1.0.0

@@ -1,10 +1,14 @@
 """Azure Document Intelligence service for document extraction."""
 
+import io
 import os
 from pathlib import Path
 from typing import Any
 
 from src.infrastructure.config import get_settings
+
+# Maximum file size for Azure Document Intelligence (4MB for images)
+MAX_IMAGE_SIZE_BYTES = 4 * 1024 * 1024
 
 
 class DocumentIntelligenceService:
@@ -20,6 +24,188 @@ class DocumentIntelligenceService:
     def is_available(self) -> bool:
         """Check if Document Intelligence is available."""
         return self._client is not None
+
+    def _compress_image(self, file_path: Path) -> bytes:
+        """Compress an image if it exceeds the maximum size.
+        
+        Args:
+            file_path: Path to the image file
+            
+        Returns:
+            Compressed image bytes, or original bytes if no compression needed
+        """
+        with open(file_path, "rb") as f:
+            original_bytes = f.read()
+        
+        # Check if it's a PDF (no compression needed for PDFs)
+        if file_path.suffix.lower() == ".pdf":
+            return original_bytes
+        
+        # If file is small enough, return as-is
+        if len(original_bytes) <= MAX_IMAGE_SIZE_BYTES:
+            return original_bytes
+        
+        try:
+            from PIL import Image
+            
+            # Open the image
+            img = Image.open(io.BytesIO(original_bytes))
+            
+            # Convert to RGB if necessary (for JPEG)
+            if img.mode in ('RGBA', 'P'):
+                img = img.convert('RGB')
+            
+            # Calculate resize factor to fit within 4MB
+            # Start with quality reduction, then resize if needed
+            output = io.BytesIO()
+            quality = 85
+            
+            while quality >= 30:
+                output.seek(0)
+                output.truncate()
+                img.save(output, format='JPEG', quality=quality, optimize=True)
+                
+                if output.tell() <= MAX_IMAGE_SIZE_BYTES:
+                    print(f"Image compressed: {len(original_bytes)/1024/1024:.2f}MB -> {output.tell()/1024/1024:.2f}MB (quality={quality})")
+                    return output.getvalue()
+                
+                quality -= 10
+            
+            # If quality reduction isn't enough, resize the image
+            scale = 0.8
+            while scale >= 0.3:
+                new_size = (int(img.width * scale), int(img.height * scale))
+                resized = img.resize(new_size, Image.Resampling.LANCZOS)
+                
+                output.seek(0)
+                output.truncate()
+                resized.save(output, format='JPEG', quality=70, optimize=True)
+                
+                if output.tell() <= MAX_IMAGE_SIZE_BYTES:
+                    print(f"Image resized: {len(original_bytes)/1024/1024:.2f}MB -> {output.tell()/1024/1024:.2f}MB (scale={scale})")
+                    return output.getvalue()
+                
+                scale -= 0.1
+            
+            # Last resort: aggressive resize
+            new_size = (int(img.width * 0.25), int(img.height * 0.25))
+            resized = img.resize(new_size, Image.Resampling.LANCZOS)
+            output.seek(0)
+            output.truncate()
+            resized.save(output, format='JPEG', quality=60, optimize=True)
+            print(f"Image aggressively resized: {len(original_bytes)/1024/1024:.2f}MB -> {output.tell()/1024/1024:.2f}MB")
+            return output.getvalue()
+            
+        except ImportError:
+            print("Pillow not installed. Cannot compress image.")
+            return original_bytes
+        except Exception as e:
+            print(f"Image compression failed: {e}")
+            return original_bytes
+
+    def _deduplicate_name_parts(self, first_name: str, last_name: str) -> tuple[str, str]:
+        """Remove duplicate words from first_name and last_name.
+        
+        E.g., if last_name contains words already in first_name, remove them.
+        "FIGUEROA MICHAEL NICHOLAS FIGUEROA" becomes:
+        first_name: "MICHAEL NICHOLAS"
+        last_name: "FIGUEROA"
+        
+        Args:
+            first_name: First name string
+            last_name: Last name string
+            
+        Returns:
+            Tuple of (cleaned_first_name, cleaned_last_name)
+        """
+        if not first_name or not last_name:
+            return first_name, last_name
+        
+        first_words = set(w.upper().strip() for w in first_name.split() if w.strip())
+        last_words = [w for w in last_name.split() if w.strip()]
+        
+        # Remove words from last_name that are already in first_name
+        unique_last_words = [w for w in last_words if w.upper() not in first_words]
+        
+        # If all words were duplicates, keep the original
+        if not unique_last_words:
+            unique_last_words = last_words
+        
+        cleaned_last_name = " ".join(unique_last_words)
+        return first_name, cleaned_last_name
+
+    def _generate_full_name(self, first_name: str, last_name: str) -> str:
+        """Generate full name by combining first and last name.
+        
+        Args:
+            first_name: First name string
+            last_name: Last name string
+            
+        Returns:
+            Combined full name with duplicates removed
+        """
+        parts = []
+        if first_name.strip():
+            parts.append(first_name.strip())
+        if last_name.strip():
+            parts.append(last_name.strip())
+        
+        full_name = " ".join(parts)
+        return full_name
+
+    def _extract_name_from_raw_text(self, raw_text: str) -> str | None:
+        """Extract the full name from raw document text.
+        
+        Looks for text that follows name field indicators.
+        Handles multi-line cases where label and name are on separate lines.
+        
+        Args:
+            raw_text: Raw text from document
+            
+        Returns:
+            Extracted full name or None if not found
+        """
+        if not raw_text:
+            return None
+        
+        lines = raw_text.split('\n')
+        
+        # Look for "Name:" or "Nom:" patterns and get the content
+        for i, line in enumerate(lines):
+            # Check if this line contains a name label
+            label_found = None
+            for label in ['Name /', 'Nom /', 'Name :', 'Nom :']:
+                if label in line:
+                    label_found = label
+                    break
+            
+            if label_found:
+                # Try to extract name from this line first
+                parts = line.split(label_found, 1)
+                if len(parts) > 1:
+                    name_part = parts[1].strip()
+                    # If we got something substantial on this line, use it
+                    if name_part and len(name_part) > 3:
+                        # Clean up - remove extra whitespace, control chars
+                        name = ' '.join(name_part.split())
+                        return name
+                
+                # If nothing on this line, check the next non-empty line
+                for j in range(i + 1, min(i + 3, len(lines))):
+                    next_line = lines[j].strip()
+                    # Skip empty lines and lines that are just labels/metadata
+                    if next_line and not any(
+                        x in next_line.lower() for x in ['date', 'nationality', 'doc #', 'expir', 'lieu']
+                    ):
+                        # This looks like a name line
+                        # Names are typically all-caps or title case with multiple words
+                        if len(next_line) > 3:
+                            name = ' '.join(next_line.split())
+                            # Verify it looks like a name (should have space or be long)
+                            if ' ' in name or len(name) > 15:
+                                return name
+        
+        return None
 
     def _initialize_client(self) -> None:
         """Initialize Azure Document Intelligence client if configured."""
@@ -65,8 +251,8 @@ class DocumentIntelligenceService:
             return {"error": "Document Intelligence not configured"}
 
         try:
-            with open(file_path, "rb") as f:
-                document_bytes = f.read()
+            # Compress image if needed (Azure limit is 4MB for images)
+            document_bytes = self._compress_image(file_path)
             
             from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
             
@@ -85,17 +271,33 @@ class DocumentIntelligenceService:
                 "document_number": "",
                 "expiry_date": "",
                 "document_type": "",
+                "is_id_document": True,  # This is an ID document
             }
 
             if result.documents:
                 doc = result.documents[0]
                 fields = doc.fields
 
-                # Extract fields from ID document
+                # Extract structured fields from Azure
+                # Try both value_string and content - they may differ!
+                first_name = ""
+                last_name = ""
+                
                 if "FirstName" in fields:
-                    extracted["first_name"] = fields["FirstName"].value_string or fields["FirstName"].content or ""
+                    # Try content first (raw OCR), then value_string (interpreted)
+                    first_name = fields["FirstName"].content or fields["FirstName"].value_string or ""
                 if "LastName" in fields:
-                    extracted["last_name"] = fields["LastName"].value_string or fields["LastName"].content or ""
+                    # Try content first (raw OCR), then value_string (interpreted)
+                    last_name = fields["LastName"].content or fields["LastName"].value_string or ""
+                
+                # Generate full_name by concatenating both parts
+                # For 4-word names like "ASHLEY CHRISTY ERIKA FERNANDEZ":
+                # Using .content (raw OCR) should preserve original order
+                extracted["first_name"] = first_name
+                extracted["last_name"] = last_name
+                extracted["full_name"] = self._generate_full_name(first_name, last_name)
+
+                # Extract other fields from ID document
                 if "DateOfBirth" in fields:
                     dob = fields["DateOfBirth"].value_date
                     if dob:
@@ -121,7 +323,19 @@ class DocumentIntelligenceService:
                     elif fields["DateOfExpiration"].content:
                         extracted["expiry_date"] = fields["DateOfExpiration"].content
                 if "DocumentType" in fields:
-                    extracted["document_type"] = fields["DocumentType"].value_string or fields["DocumentType"].content or ""
+                    raw_doc_type = (fields["DocumentType"].value_string or fields["DocumentType"].content or "").lower()
+                    # Normalize to our standard types
+                    if "passport" in raw_doc_type:
+                        extracted["document_type"] = "passport"
+                    elif "driver" in raw_doc_type or "license" in raw_doc_type:
+                        extracted["document_type"] = "driving_license"
+                    elif "id" in raw_doc_type or "card" in raw_doc_type:
+                        extracted["document_type"] = "id_card"
+                    else:
+                        extracted["document_type"] = "passport"  # Default to passport for ID documents
+
+            # Return extracted data with full_name already populated
+            # No need for deduplication since we're using structured fields
 
             return extracted
 
@@ -143,8 +357,8 @@ class DocumentIntelligenceService:
             return {"error": "Document Intelligence not configured"}
 
         try:
-            with open(file_path, "rb") as f:
-                document_bytes = f.read()
+            # Compress image if needed (Azure limit is 4MB for images)
+            document_bytes = self._compress_image(file_path)
             
             from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
             
@@ -160,6 +374,7 @@ class DocumentIntelligenceService:
                 "document_date": "",  # Date of the bill/invoice
                 "is_valid_timeframe": True,  # Whether document is within 3 months
                 "validity_message": "",
+                "is_id_document": False,  # This is an address document, not an ID
             }
             
             # Try invoice model first - good for utility bills
@@ -229,6 +444,16 @@ class DocumentIntelligenceService:
                     
                     # If we got an address, return success
                     if extracted["address"]:
+                        # Remove duplicate words from name parts
+                        extracted["first_name"], extracted["last_name"] = self._deduplicate_name_parts(
+                            extracted["first_name"], 
+                            extracted["last_name"]
+                        )
+                        # Generate full name
+                        extracted["full_name"] = self._generate_full_name(
+                            extracted["first_name"], 
+                            extracted["last_name"]
+                        )
                         return extracted
                         
             except Exception:
@@ -314,9 +539,24 @@ class DocumentIntelligenceService:
                 if meaningful_lines:
                     extracted["address"] = ", ".join(meaningful_lines[:3])
                     extracted["document_type"] = "proof_of_address"
+                    # Remove duplicate words from name parts
+                    extracted["first_name"], extracted["last_name"] = self._deduplicate_name_parts(
+                        extracted["first_name"], 
+                        extracted["last_name"]
+                    )
                     return extracted
                 return {"error": "Could not extract address information from this document"}
 
+            # Remove duplicate words from name parts before returning
+            extracted["first_name"], extracted["last_name"] = self._deduplicate_name_parts(
+                extracted["first_name"], 
+                extracted["last_name"]
+            )
+            # Generate full name
+            extracted["full_name"] = self._generate_full_name(
+                extracted["first_name"], 
+                extracted["last_name"]
+            )
             return extracted
 
         except Exception as e:
@@ -341,8 +581,8 @@ class DocumentIntelligenceService:
             return {"error": "Document Intelligence not configured"}
 
         try:
-            with open(file_path, "rb") as f:
-                document_bytes = f.read()
+            # Compress image if needed (Azure limit is 4MB for images)
+            document_bytes = self._compress_image(file_path)
             
             logger.info(f"Auto-detect: analyzing {file_path}, size={len(document_bytes)} bytes")
             
@@ -390,6 +630,16 @@ class DocumentIntelligenceService:
                     else:
                         extracted["document_type"] = "id_card"
                     
+                    # Remove duplicate words from name parts before returning
+                    extracted["first_name"], extracted["last_name"] = self._deduplicate_name_parts(
+                        extracted["first_name"], 
+                        extracted["last_name"]
+                    )
+                    # Generate full name
+                    extracted["full_name"] = self._generate_full_name(
+                        extracted["first_name"], 
+                        extracted["last_name"]
+                    )
                     return extracted
             
             # Fall back to address document extraction
@@ -436,10 +686,22 @@ class DocumentIntelligenceService:
             doc = result.documents[0]
             fields = doc.fields
 
+            # Use structured fields - prefer .content (raw OCR) over .value_string (interpreted)
+            # For 4-word names like "ASHLEY CHRISTY ERIKA FERNANDEZ":
+            # Azure may reorder if using value_string, so prefer content
+            first_name = ""
+            last_name = ""
+            
             if "FirstName" in fields:
-                extracted["first_name"] = fields["FirstName"].value_string or fields["FirstName"].content or ""
+                # Try content first (raw OCR), then value_string (interpreted)
+                first_name = fields["FirstName"].content or fields["FirstName"].value_string or ""
             if "LastName" in fields:
-                extracted["last_name"] = fields["LastName"].value_string or fields["LastName"].content or ""
+                # Try content first (raw OCR), then value_string (interpreted)
+                last_name = fields["LastName"].content or fields["LastName"].value_string or ""
+            
+            extracted["first_name"] = first_name
+            extracted["last_name"] = last_name
+            
             if "DateOfBirth" in fields:
                 dob = fields["DateOfBirth"].value_date
                 if dob:
@@ -463,5 +725,11 @@ class DocumentIntelligenceService:
                     extracted["expiry_date"] = exp.isoformat()
                 elif fields["DateOfExpiration"].content:
                     extracted["expiry_date"] = fields["DateOfExpiration"].content
+
+        # Generate full name by concatenating first and last
+        extracted["full_name"] = self._generate_full_name(
+            extracted["first_name"], 
+            extracted["last_name"]
+        )
 
         return extracted

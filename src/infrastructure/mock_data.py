@@ -13,6 +13,8 @@ class CustomerRepository:
 
     Provides methods to query customer profiles, documents, accounts,
     and KYC status from the mock data files.
+    
+    Automatically reloads data when CSV files are modified.
     """
 
     def __init__(self, data_dir: str | Path | None = None):
@@ -33,15 +35,29 @@ class CustomerRepository:
                 data_dir = Path("data/mock")
 
         self._data_dir = Path(data_dir)
+        self._file_mtimes: dict[str, float] = {}
         self._load_data()
 
     def _load_data(self) -> None:
-        """Load all CSV files into memory."""
+        """Load all CSV files into memory and track modification times."""
         self._customers = self._load_csv("customers.csv")
         self._documents = self._load_csv("kyc_documents.csv")
         self._history = self._load_csv("verification_history.csv")
         self._accounts = self._load_csv("accounts.csv")
         self._pep_watchlist = self._load_csv("pep_watchlist.csv")
+        self._country_risk = self._load_csv("country_risk.csv")
+        
+        # Track file modification times
+        for filename in ["customers.csv", "kyc_documents.csv", "verification_history.csv", 
+                         "accounts.csv", "pep_watchlist.csv", "country_risk.csv"]:
+            filepath = self._data_dir / filename
+            if filepath.exists():
+                self._file_mtimes[filename] = filepath.stat().st_mtime
+        self._documents = self._load_csv("kyc_documents.csv")
+        self._history = self._load_csv("verification_history.csv")
+        self._accounts = self._load_csv("accounts.csv")
+        self._pep_watchlist = self._load_csv("pep_watchlist.csv")
+        self._country_risk = self._load_csv("country_risk.csv")
 
     def _load_csv(self, filename: str) -> pd.DataFrame:
         """Load a CSV file into a DataFrame.
@@ -57,6 +73,20 @@ class CustomerRepository:
             return pd.read_csv(filepath, dtype=str).fillna("")
         return pd.DataFrame()
 
+    def _check_and_reload_if_needed(self) -> None:
+        """Check if any CSV file changed and reload if needed."""
+        needs_reload = False
+        for filename, old_mtime in self._file_mtimes.items():
+            filepath = self._data_dir / filename
+            if filepath.exists():
+                current_mtime = filepath.stat().st_mtime
+                if current_mtime > old_mtime:
+                    needs_reload = True
+                    break
+        if needs_reload:
+            print("[CustomerRepository] CSV files changed, reloading data...")
+            self._load_data()
+
     def reload(self) -> None:
         """Reload all data from disk (for hot-reload support)."""
         self._load_data()
@@ -70,6 +100,7 @@ class CustomerRepository:
         Returns:
             Customer dict or None if not found
         """
+        self._check_and_reload_if_needed()
         if self._customers.empty:
             return None
 
@@ -88,6 +119,7 @@ class CustomerRepository:
         Returns:
             Customer dict or None if not found
         """
+        self._check_and_reload_if_needed()
         if self._customers.empty:
             return None
 
@@ -108,6 +140,7 @@ class CustomerRepository:
         Returns:
             List of matching customers
         """
+        self._check_and_reload_if_needed()
         if self._customers.empty:
             return []
 
@@ -128,6 +161,7 @@ class CustomerRepository:
         Returns:
             KYC status dict with documents and overall status
         """
+        self._check_and_reload_if_needed()
         # Get documents for customer
         docs = self._documents[self._documents["customer_id"] == customer_id]
         if docs.empty:
@@ -159,6 +193,7 @@ class CustomerRepository:
         Returns:
             Document dict or None
         """
+        self._check_and_reload_if_needed()
         if self._documents.empty:
             return None
 
@@ -181,6 +216,7 @@ class CustomerRepository:
         Returns:
             List of account dicts
         """
+        self._check_and_reload_if_needed()
         if self._accounts.empty:
             return []
 
@@ -236,6 +272,7 @@ class CustomerRepository:
         Returns:
             List of pending review records
         """
+        self._check_and_reload_if_needed()
         if self._history.empty:
             return []
 
@@ -275,6 +312,7 @@ class CustomerRepository:
         Returns:
             List of matching PEP entries
         """
+        self._check_and_reload_if_needed()
         if self._pep_watchlist.empty:
             return []
 
@@ -284,6 +322,48 @@ class CustomerRepository:
         ]
 
         return matches.to_dict("records")
+
+    def get_country_risk(self, country: str) -> dict[str, Any] | None:
+        """Get risk assessment for a country from CSV data.
+
+        Args:
+            country: Country name or nationality
+
+        Returns:
+            Risk assessment dict with risk_level, risk_score, reason, action, requires_edd
+            Returns default low risk for unlisted countries
+        """
+        self._check_and_reload_if_needed()
+        if self._country_risk.empty:
+            return None
+        
+        country_upper = country.upper().strip()
+        
+        # Try exact match first
+        matches = self._country_risk[
+            self._country_risk["country"].str.upper().str.strip() == country_upper
+        ]
+        
+        if matches.empty:
+            # Return default low risk for unlisted countries
+            return {
+                "country": country,
+                "risk_level": "low",
+                "risk_score": 20,
+                "reason": "Standard Risk - Not on watchlist",
+                "action": "auto_approve",
+                "requires_edd": False
+            }
+        
+        row = matches.iloc[0]
+        return {
+            "country": row["country"],
+            "risk_level": row["risk_level"],
+            "risk_score": int(row["risk_score"]) if row["risk_score"] else 0,
+            "reason": row["reason"],
+            "action": row["action"],
+            "requires_edd": row["requires_edd"].lower() == "true"
+        }
 
     def create_customer(self, customer_data: dict[str, Any]) -> dict[str, Any]:
         """Create a new customer record.
