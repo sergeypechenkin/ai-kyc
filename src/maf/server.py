@@ -168,7 +168,7 @@ app = FastAPI(
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -323,9 +323,12 @@ async def upload_document(
     session_id: str = Form(default="default"),
 ):
     """Upload a document and extract information."""
+    print(f"[INFO] Upload request: file={file.filename}, size={file.size if hasattr(file, 'size') else 'unknown'}, type={file.content_type}, doc_type={doc_type}, session={session_id}")
+    
     # Validate file type
     allowed_types = ["application/pdf", "image/jpeg", "image/png", "image/tiff"]
     if file.content_type not in allowed_types:
+        print(f"[ERROR] Invalid file type: {file.content_type}")
         raise HTTPException(
             status_code=400,
             detail=f"File type {file.content_type} not allowed. Use PDF or images."
@@ -348,10 +351,17 @@ async def upload_document(
     safe_doc_type = doc_type.replace(" ", "_").replace("/", "-")[:30] if doc_type else "document"
     file_path = doc_dir / f"{safe_doc_type}_{unique_id}_{safe_filename}"
     
-    with open(file_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    print(f"[INFO] Saving file to: {file_path}")
+    try:
+        with open(file_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        print(f"[INFO] File saved successfully: {file_path.stat().st_size} bytes")
+    except Exception as e:
+        print(f"[ERROR] Failed to save file: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
     # Try to extract data using Document Intelligence
+    print(f"[INFO] Starting document extraction for: {file_path}")
     extracted_data = None
     result = None
     try:
@@ -365,8 +375,16 @@ async def upload_document(
             else:
                 result = await doc_intel.extract_address_document(file_path)
             extracted_data = ExtractedData(**result)
+            # Fallback: if extraction didn't detect doc type, use the requested doc_type
+            if not extracted_data.document_type and doc_type not in ["auto"]:
+                extracted_data.document_type = doc_type
+                if result:
+                    result["document_type"] = doc_type
+            print(f"[INFO] Extraction successful: {extracted_data.document_type}")
     except Exception as e:
         print(f"[WARN] Document Intelligence extraction failed: {e}")
+        import traceback
+        print(f"[DEBUG] Traceback: {traceback.format_exc()}")
     
     if extracted_data is None:
         extracted_data = ExtractedData(
@@ -440,6 +458,7 @@ async def upload_document(
                 _customer_session_map[customer_id_found] = session_id
                 print(f"[INFO] Mapped customer {customer_id_found} to session {session_id}")
 
+    print(f"[INFO] Upload complete: {file.filename} - {extracted_data.document_type if extracted_data else 'no extraction'}")
     return {
         "success": True,
         "file_path": str(file_path.relative_to(DOCUMENTS_DIR.parent)),
@@ -566,6 +585,46 @@ async def submit_for_compliance_review(submission: ComplianceSubmission):
     }
 
 
+@app.get("/api/compliance/pending")
+async def get_compliance_pending():
+    """Get list of all pending compliance reviews.
+    
+    Returns list of pending reviews with customer info, risk tier, and status.
+    Used by the bank employee UI to show a clickable list.
+    """
+    from src.maf.tools.kyc_verification import get_pending_submissions
+    
+    pending = []
+    
+    # Get all pending submissions
+    for submission in get_pending_submissions():
+        pending.append({
+            "customer_id": submission.get("customer_id", ""),
+            "customer_name": submission.get("customer_name", ""),
+            "status": submission.get("status", ""),
+            "submitted_date": submission.get("submitted_date", ""),
+            "risk_tier": submission.get("risk_tier", ""),
+            "risk_score": submission.get("risk_score", 0),
+        })
+    
+    # Also add CSV-based pending reviews if customer_repo is available
+    if _customer_repo:
+        csv_pending = _customer_repo.get_pending_reviews()
+        existing_ids = {p["customer_id"] for p in pending}
+        for review in csv_pending:
+            if review.get("customer_id") not in existing_ids:
+                pending.append({
+                    "customer_id": review.get("customer_id", ""),
+                    "customer_name": review.get("customer_name", ""),
+                    "status": review.get("status", "pending"),
+                    "submitted_date": review.get("submitted_date", ""),
+                    "risk_tier": review.get("risk_tier", ""),
+                    "risk_score": review.get("risk_score", 0),
+                })
+    
+    return {"reviews": pending}
+
+
 @app.get("/api/customers/{customer_id}")
 async def get_customer(customer_id: str):
     """Get customer information.
@@ -578,21 +637,19 @@ async def get_customer(customer_id: str):
     """
     from src.maf.tools.kyc_verification import get_pending_submissions
     
-    # First check if this is a NEW-xxxx customer from document uploads
-    if customer_id.startswith("NEW-"):
-        for submission in get_pending_submissions():
-            if submission.get("customer_id") == customer_id:
-                return {
-                    "customer_id": customer_id,
-                    "first_name": submission.get("first_name", ""),
-                    "last_name": submission.get("last_name", ""),
-                    "date_of_birth": submission.get("date_of_birth", ""),
-                    "nationality": submission.get("nationality", ""),
-                    "address": submission.get("address", ""),
-                    "email": "",
-                    "document_number": submission.get("document_number", ""),
-                }
-        raise HTTPException(status_code=404, detail=f"Customer {customer_id} not found")
+    # Check pending submissions (both NEW-xxxx and inter-agent submissions)
+    for submission in get_pending_submissions():
+        if submission.get("customer_id") == customer_id:
+            return {
+                "customer_id": customer_id,
+                "first_name": submission.get("first_name", ""),
+                "last_name": submission.get("last_name", ""),
+                "date_of_birth": submission.get("date_of_birth", ""),
+                "nationality": submission.get("nationality", ""),
+                "address": submission.get("address", ""),
+                "email": "",
+                "document_number": submission.get("document_number", ""),
+            }
     
     if _customer_repo is None:
         raise HTTPException(status_code=503, detail="Customer repository not initialized")
@@ -624,12 +681,22 @@ async def get_customer_documents(customer_id: str):
     """
     documents = []
     
-    # First, check session-tracked documents
+    # First, check session-tracked documents via customer_session_map
     session_id = _customer_session_map.get(customer_id)
     if session_id and session_id in _session_documents:
         documents = _session_documents[session_id]
         print(f"[INFO] Found {len(documents)} documents for customer {customer_id} in session {session_id}")
         return {"documents": documents}
+    
+    # Also check pending submissions for upload_session_id
+    from src.maf.tools.kyc_verification import get_pending_submissions
+    for submission in get_pending_submissions():
+        if submission.get("customer_id") == customer_id:
+            upload_sid = submission.get("upload_session_id") or submission.get("session_id", "")
+            if upload_sid and upload_sid in _session_documents:
+                documents = _session_documents[upload_sid]
+                print(f"[INFO] Found {len(documents)} documents for customer {customer_id} via submission session {upload_sid}")
+                return {"documents": documents}
     
     # Fallback: check customer-specific folder
     customer_docs_dir = DOCUMENTS_DIR / customer_id
@@ -678,22 +745,21 @@ async def get_customer_risk_assessment(customer_id: str):
     """
     from src.maf.tools.kyc_verification import get_pending_submissions
     
-    # First check if this is a NEW-xxxx customer from document uploads
-    if customer_id.startswith("NEW-"):
-        for submission in get_pending_submissions():
-            if submission.get("customer_id") == customer_id:
-                # Return the stored risk assessment
-                return {
-                    "risk_score": submission.get("risk_score", 0),
-                    "risk_tier": submission.get("risk_tier", "high"),
-                    "is_pep": False,  # PEP check already done at upload time
-                    "pep_details": None,
-                    "country_risk_reason": None,
-                    "required_documents": [],
-                    "approval_workflow": "compliance_escalation" if submission.get("risk_tier") == "high" else "employee_review",
-                    "alerts": submission.get("alerts", []),
-                }
-        raise HTTPException(status_code=404, detail=f"Customer {customer_id} not found")
+    # Check pending submissions (both NEW-xxxx and inter-agent)
+    for submission in get_pending_submissions():
+        if submission.get("customer_id") == customer_id:
+            risk_tier = submission.get("risk_tier", "medium")
+            # Return the stored risk assessment
+            return {
+                "risk_score": submission.get("risk_score", 0),
+                "risk_tier": risk_tier,
+                "is_pep": False,  # PEP check already done at upload time
+                "pep_details": None,
+                "country_risk_reason": submission.get("details", ""),
+                "required_documents": [],
+                "approval_workflow": "compliance_escalation" if risk_tier == "high" else "employee_review",
+                "alerts": submission.get("alerts", []),
+            }
     
     if _customer_repo is None:
         raise HTTPException(status_code=503, detail="Customer repository not initialized")
@@ -885,10 +951,25 @@ async def websocket_endpoint(websocket: WebSocket, channel: str):
                 })
                 continue
             
-            # Support both 'message' and 'content' from frontend
-            message = data.get("message") or data.get("content", "")
+            # Handle document_event separately
+            msg_type = data.get("type")
+            if msg_type == "document_event":
+                payload = data.get("payload", {})
+                if payload.get("confirmed"):
+                    message = "Verified document upload event received."
+                    context = {
+                        "document_event": payload,
+                        "source": "upload",
+                    }
+                    print(f"[DEBUG] Document event: {payload.get('docType')}")
+                else:
+                    continue  # Skip unconfirmed document events
+            else:
+                # Support both 'message' and 'content' from frontend
+                message = data.get("message") or data.get("content", "")
+                context = data.get("context", {})
+            
             print(f"[DEBUG] Processing message: {message}")
-            context = data.get("context", {})
             
             role = ChatRole.CUSTOMER if channel == "customer" else ChatRole.EMPLOYEE
             agent_name = "customer-agent" if role == ChatRole.CUSTOMER else "bank-employee-agent"

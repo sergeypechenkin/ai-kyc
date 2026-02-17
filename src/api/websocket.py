@@ -134,8 +134,9 @@ def setup_websocket(app: FastAPI) -> None:
                 message = json.loads(data)
 
                 if channel in ["customer", "employee"]:
-                    # Process chat message
+                    # Process chat or document event
                     await handle_chat_message(websocket, channel, message, state)
+                    await handle_document_event(websocket, channel, message, state)
 
         except WebSocketDisconnect:
             manager.disconnect(websocket, channel)
@@ -200,7 +201,67 @@ async def handle_chat_message(
                 "handoff_target": response.handoff_target,
             },
         })
+    except Exception as e:
+        logger.error(f"Chat message handling failed: {e}")
+        await websocket.send_json({
+            "type": "error",
+            "message": str(e),
+        })
 
+
+async def handle_document_event(
+    websocket: WebSocket,
+    channel: str,
+    message: dict[str, Any],
+    state,
+) -> None:
+    """Handle a verified document event from the client.
+
+    Args:
+        websocket: The WebSocket connection
+        channel: Channel name (customer/employee)
+        message: The message data
+        state: Application state
+    """
+    msg_type = message.get("type")
+    payload = message.get("payload", {})
+
+    logger.info(f"[DOCUMENT_EVENT] Received: type={msg_type}, has_payload={bool(payload)}, confirmed={payload.get('confirmed') if payload else None}")
+
+    if msg_type != "document_event" or not payload:
+        logger.info(f"[DOCUMENT_EVENT] Skipping: wrong type or no payload")
+        return
+
+    if not payload.get("confirmed", False):
+        logger.info(f"[DOCUMENT_EVENT] Skipping: not confirmed")
+        return
+
+    # Map channel to role
+    role = ChatRole.CUSTOMER if channel == "customer" else ChatRole.EMPLOYEE
+
+    logger.info(f"[DOCUMENT_EVENT] Processing: docType={payload.get('docType')}, role={role}")
+
+    try:
+        response = await state.orchestrator.process_user_message(
+            message="Verified document upload event received.",
+            role=role,
+            context={
+                "document_event": payload,
+                "source": "upload",
+            },
+        )
+
+        await websocket.send_json({
+            "type": "message",
+            "role": "assistant",
+            "agent": response.source_agent,
+            "content": response.message,
+            "metadata": {
+                "requires_handoff": response.requires_handoff,
+                "handoff_target": response.handoff_target,
+            },
+        })
+        
         # If there's a handoff, send notification to the other channel
         if response.requires_handoff and response.handoff_target:
             target_channel = (
@@ -215,9 +276,8 @@ async def handle_chat_message(
                 },
                 target_channel,
             )
-
     except Exception as e:
-        logger.error(f"Error processing message: {e}")
+        logger.error(f"Document event handling failed: {e}")
         await websocket.send_json({
             "type": "error",
             "message": str(e),

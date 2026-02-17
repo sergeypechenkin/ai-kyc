@@ -6,6 +6,8 @@ import InlineUpload from './InlineUpload';
 interface CustomerChatProps {
   messages: ChatMessage[];
   onSendMessage: (message: string) => void;
+  onAddLocalMessage: (message: string) => void;
+  onSendDocumentEvent: (payload: { docType: string; extractedData: ExtractedData; confirmed: boolean; sessionId?: string }) => void;
   isConnected: boolean;
 }
 
@@ -18,12 +20,13 @@ interface ExtractedData {
   document_number: string;
   expiry_date: string;
   document_type: string;
+  document_date?: string;
   validation_errors?: string[];
   validation_warnings?: string[];
   error?: string;
 }
 
-export default function CustomerChat({ messages, onSendMessage, isConnected }: CustomerChatProps) {
+export default function CustomerChat({ messages, onSendMessage, onAddLocalMessage, onSendDocumentEvent, isConnected }: CustomerChatProps) {
   const [input, setInput] = useState('');
   const [showUploadPanel, setShowUploadPanel] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -44,8 +47,8 @@ export default function CustomerChat({ messages, onSendMessage, isConnected }: C
     }
   };
 
-  const handleUploadComplete = (data: ExtractedData, docType: string, confirmed: boolean) => {
-    setShowUploadPanel(false);
+  const handleUploadComplete = (data: ExtractedData, docType: string, confirmed: boolean, uploadSessionId?: string) => {
+    // Don't close upload panel - step-by-step flow manages its own visibility
     
     // Format the extracted data as a message - use detected document type
     const docTypeLabel: Record<string, string> = {
@@ -57,28 +60,39 @@ export default function CustomerChat({ messages, onSendMessage, isConnected }: C
     };
     
     // Use detected type from data if available
-    const actualDocType = data.document_type || docType;
-    const label = docTypeLabel[actualDocType] || 'document';
+    const actualDocType = docType !== 'auto' ? docType : (data.document_type || docType);
+    const label = docTypeLabel[actualDocType] || actualDocType;
 
     if (data.error) {
-      onSendMessage(`I tried to upload a document but there was an issue: ${data.error}`);
+      onAddLocalMessage(`I tried to upload a document but there was an issue: ${data.error}`);
       return;
     }
 
     if (!confirmed) {
-      onSendMessage(`The document didn't scan correctly. I'll try uploading a different photo.`);
+      onAddLocalMessage(`The document didn't scan correctly. I'll try uploading a different photo.`);
       return;
     }
 
     // Build confirmation message with extracted data
     const parts = [`I've uploaded my ${label} and confirmed the information:`];
-    
-    if (data.first_name) parts.push(`• Name: ${data.first_name} ${data.last_name || ''}`);
-    if (data.date_of_birth) parts.push(`• Date of Birth: ${data.date_of_birth}`);
-    if (data.nationality) parts.push(`• Nationality: ${data.nationality}`);
-    if (data.address) parts.push(`• Address: ${data.address}`);
-    if (data.document_number) parts.push(`• Document Number: ${data.document_number}`);
-    if (data.expiry_date) parts.push(`• Expiry Date: ${data.expiry_date}`);
+
+    if (actualDocType === 'proof_of_address') {
+      parts.push('• I have already uploaded my identity document.');
+      if (data.address) parts.push(`• Address: ${data.address}`);
+      if (data.document_date) parts.push(`• Document Date: ${data.document_date}`);
+    } else if (['passport', 'driving_license', 'id_card'].includes(actualDocType)) {
+      if (data.first_name) parts.push(`• Name: ${data.first_name} ${data.last_name || ''}`);
+      if (data.date_of_birth) parts.push(`• Date of Birth: ${data.date_of_birth}`);
+      if (data.nationality) parts.push(`• Nationality: ${data.nationality}`);
+      if (data.address) parts.push(`• Address: ${data.address}`);
+      if (data.document_number) parts.push(`• Document Number: ${data.document_number}`);
+      if (data.expiry_date) parts.push(`• Expiry Date: ${data.expiry_date}`);
+    } else {
+      // Additional document (bank statement, proof of income, etc.)
+      parts.push(`• Document type: ${actualDocType}`);
+      if (data.address) parts.push(`• Address: ${data.address}`);
+      if (data.document_date) parts.push(`• Document Date: ${data.document_date}`);
+    }
     
     // Add validation warnings if any
     if (data.validation_warnings && data.validation_warnings.length > 0) {
@@ -91,7 +105,8 @@ export default function CustomerChat({ messages, onSendMessage, isConnected }: C
       parts.push('(No information could be automatically extracted.)');
     }
     
-    onSendMessage(parts.join('\n'));
+    onAddLocalMessage(parts.join('\n'));
+    onSendDocumentEvent({ docType: actualDocType, extractedData: data, confirmed, sessionId: uploadSessionId });
   };
 
   return (

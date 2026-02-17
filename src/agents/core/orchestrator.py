@@ -1,6 +1,7 @@
 """Agent orchestrator for managing agent-to-agent communication."""
 
 import asyncio
+import logging
 import uuid
 from collections.abc import Callable
 from datetime import datetime
@@ -9,6 +10,8 @@ from typing import Any
 from src.agents.core.agent_registry import AgentRegistry
 from src.agents.core.base_agent import KycAgent
 from src.agents.core.models import AgentCapability, AgentMessage, AgentResponse, ChatRole
+
+logger = logging.getLogger(__name__)
 
 
 class AgentOrchestrator:
@@ -66,6 +69,8 @@ class AgentOrchestrator:
             raise RuntimeError(f"No agent found for role: {role}")
 
         # Log the incoming message
+        logger.info(f"[ORCHESTRATOR] Processing message for {agent.name}, has_context={bool(context)}, context_keys={list(context.keys()) if context else []}")
+        
         await self._broadcast_activity({
             "type": "user_message",
             "role": role.value,

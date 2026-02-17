@@ -1,40 +1,42 @@
 [
   {
-    "customer_id": "NEW-9363",
-    "customer_name": "SERGEY PECHENKIN",
-    "first_name": "SERGEY",
-    "last_name": "PECHENKIN",
-    "date_of_birth": "1981-01-17",
-    "nationality": "RUSSIAN FEDERATION",
-    "address": "APARTMENT 16, BEECH HALL, LARKFIELD WAY,\nDUBLIN 18, Dublin, D18V90P, DUBLIN 18,\nDublin, D18V90P\nDUBLIN 18\nDublin",
-    "document_number": "55 0297612",
-    "status": "approved",
-    "submitted_date": "2026-02-12T10:00:04.868361",
-    "risk_tier": "high",
-    "risk_score": 85,
+    "customer_id": "NEW-9265",
+    "customer_name": "MICHAEL NICHOLAS",
+    "first_name": "MICHAEL",
+    "last_name": "NICHOLAS",
+    "date_of_birth": "1996-03-05",
+    "nationality": "WAKANDAN",
+    "address": "204 Peace Avenue,\nWakanda Central, Wakanda",
+    "document_number": "7629401183",
+    "status": "pending_compliance_review",
+    "submitted_date": "2026-02-17T08:13:25.924879",
+    "risk_tier": "medium",
+    "risk_score": 50,
     "alerts": [
-      "\u26a0\ufe0f HIGH RISK COUNTRY: RUSSIAN FEDERATION - FATF Grey List + EU Sanctions",
-      "\u26d4 COMPLIANCE ESCALATION REQUIRED - High risk score"
+      "\u26a1 MEDIUM RISK COUNTRY: WAKANDAN - EU FATF Grey List - Increased Monitoring"
     ],
-    "session_id": "customer-1770890312065-d2em4q15y"
+    "session_id": "customer-1771315883673-vb70ohrsp",
+    "upload_session_id": "customer-1771315883673-vb70ohrsp",
+    "details": "Application review needed for medium risk profile with all required documents submitted."
   },
   {
-    "customer_id": "NEW-5343",
-    "customer_name": "SERGEY PECHENKIN",
-    "first_name": "SERGEY",
-    "last_name": "PECHENKIN",
-    "date_of_birth": "1981-01-17",
-    "nationality": "RUSSIAN FEDERATION",
-    "address": "APARTMENT 16, BEECH HALL, LARKFIELD WAY,\nDUBLIN 18, Dublin, D18V90P, DUBLIN 18,\nDublin, D18V90P\nDUBLIN 18\nDublin",
-    "document_number": "55 0297612",
-    "status": "approved",
-    "submitted_date": "2026-02-12T16:55:24.037785",
-    "risk_tier": "high",
-    "risk_score": 85,
+    "customer_id": "NEW-7511",
+    "customer_name": "MICHAEL NICHOLAS",
+    "first_name": "MICHAEL",
+    "last_name": "NICHOLAS",
+    "date_of_birth": "1996-03-05",
+    "nationality": "WAKANDAN",
+    "address": "204 Peace Avenue,\nWakanda Central, Wakanda",
+    "document_number": "7629401183",
+    "status": "pending_compliance_review",
+    "submitted_date": "2026-02-17T08:31:00.547028",
+    "risk_tier": "medium",
+    "risk_score": 50,
     "alerts": [
-      "\u26a0\ufe0f HIGH RISK COUNTRY: RUSSIAN FEDERATION - FATF Grey List + EU Sanctions",
-      "\u26d4 COMPLIANCE ESCALATION REQUIRED - High risk score"
+      "\u26a1 MEDIUM RISK COUNTRY: WAKANDAN - EU FATF Grey List - Increased Monitoring"
     ],
-    "session_id": "customer-1770915087443-cv1uiqa07"
+    "session_id": "customer-1771316617511-7nywr524s",
+    "upload_session_id": "customer-1771316617511-7nywr524s",
+    "details": "Medium risk profile application with verified documents."
   }
 ]

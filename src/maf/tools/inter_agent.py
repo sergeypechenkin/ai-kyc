@@ -4,7 +4,9 @@ Enables agents to communicate with each other through the workflow.
 """
 
 from typing import Callable, Awaitable
+from datetime import datetime
 import uuid
+import random
 from agent_framework import ai_function
 from src.maf.activity import broadcast_activity_sync
 
@@ -14,6 +16,32 @@ MessageHandler = Callable[[str, str, str, dict], Awaitable[None]]
 # Module-level handler for inter-agent messages
 _message_handler: MessageHandler | None = None
 _current_agent: str = ""
+
+# Accumulated customer data from document events in the current session
+_extracted_customer_data: dict = {}
+_upload_session_id: str = ""
+
+
+def store_extracted_data(data: dict, upload_session_id: str = "") -> None:
+    """Store extracted data from document events for use in inter-agent tools.
+    
+    Called by the workflow when processing document_event messages.
+    Data is accumulated (merged) across multiple document uploads.
+    """
+    global _extracted_customer_data, _upload_session_id
+    for k, v in data.items():
+        if v:  # only store non-empty values
+            _extracted_customer_data[k] = v
+    if upload_session_id:
+        _upload_session_id = upload_session_id
+    print(f"[DEBUG] Stored extracted data: keys={list(_extracted_customer_data.keys())}, session={_upload_session_id}")
+
+
+def clear_extracted_data() -> None:
+    """Clear stored extracted data (e.g., on new conversation)."""
+    global _extracted_customer_data, _upload_session_id
+    _extracted_customer_data = {}
+    _upload_session_id = ""
 
 
 def init_inter_agent_tools(
@@ -38,30 +66,74 @@ async def request_bank_review(customer_id: str, request_type: str, details: str)
     Use when a customer needs verification, approval, or document review.
     
     Args:
-        customer_id: Customer's ID
+        customer_id: Customer's name or ID
         request_type: Type of request (verification, approval, review)
         details: Additional details about the request
         
     Returns:
         Confirmation message
     """
+    import re as _re
+    
+    # Generate a proper unique customer ID
+    new_customer_id = f"NEW-{random.randint(1000, 9999)}"
+    
+    # Use accumulated extracted data from document events
+    data = _extracted_customer_data
+    customer_name = f"{data.get('first_name', '')} {data.get('last_name', '')}".strip() or customer_id
+    
+    # Try to extract real risk tier from details text or stored data
+    _risk_tier = data.get("risk_tier", "")
+    if not _risk_tier:
+        _risk_match = _re.search(r'\b(low|medium|high)\b', details.lower())
+        _risk_tier = _risk_match.group(1) if _risk_match else request_type
+    
+    _risk_score = data.get("risk_score", 0)
+    _alerts = data.get("alerts", [])
+    
     # Broadcast inter-agent communication
     broadcast_activity_sync("inter_agent", _current_agent, {
         "action": "request_bank_review",
         "from": _current_agent,
         "to": "bank-employee-agent",
-        "customer_id": customer_id,
+        "customer_id": new_customer_id,
+        "customer_name": customer_name,
         "request_type": request_type,
         "details": details[:100]
     })
     
+    # Create a pending submission with full customer data
+    from src.maf.tools.kyc_verification import add_pending_submission
+    
+    submission = {
+        "customer_id": new_customer_id,
+        "customer_name": customer_name,
+        "first_name": data.get("first_name", ""),
+        "last_name": data.get("last_name", ""),
+        "date_of_birth": data.get("date_of_birth", ""),
+        "nationality": data.get("nationality", ""),
+        "address": data.get("address", ""),
+        "document_number": data.get("document_number", ""),
+        "status": "pending_compliance_review",
+        "submitted_date": datetime.now().isoformat(),
+        "risk_tier": _risk_tier,
+        "risk_score": _risk_score,
+        "alerts": _alerts,
+        "session_id": _upload_session_id or f"inter-agent-{new_customer_id}-{datetime.now().isoformat()}",
+        "upload_session_id": _upload_session_id,
+        "details": details,
+    }
+    
+    add_pending_submission(submission)
+    print(f"[INFO] Created compliance submission: {new_customer_id} ({customer_name}) risk={_risk_tier} session={_upload_session_id}")
+    
     if _message_handler:
         await _message_handler(
             "bank-employee-agent",
-            f"Review request for customer {customer_id}: {details}",
+            f"Review request for customer {new_customer_id} ({customer_name}): {details}",
             "request",
             {
-                "customer_id": customer_id,
+                "customer_id": new_customer_id,
                 "request_type": request_type,
                 "details": details,
                 "source_agent": _current_agent,
@@ -70,10 +142,11 @@ async def request_bank_review(customer_id: str, request_type: str, details: str)
     
     return (
         f"Request submitted to Bank Employee Agent:\n"
-        f"- Customer: {customer_id}\n"
+        f"- Customer: {customer_name} ({new_customer_id})\n"
+        f"- Risk: {_risk_tier.upper()}\n"
         f"- Type: {request_type}\n"
         f"- Details: {details}\n"
-        f"The bank team will review and respond shortly."
+        f"The bank compliance team will review and respond shortly."
     )
 
 

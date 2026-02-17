@@ -1,9 +1,10 @@
 """Application state management."""
 
 import asyncio
+import os
 from typing import Any
 
-from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+from azure.identity import ClientSecretCredential, get_bearer_token_provider
 from semantic_kernel import Kernel
 from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
 
@@ -76,7 +77,7 @@ class AppState:
         self.customer_repository = CustomerRepository()
         self.document_search = DocumentSearchService()
         self.document_intelligence = DocumentIntelligenceService()
-        self.document_validation = DocumentValidationService()
+        self.document_validation = DocumentValidationService(customer_repo=self.customer_repository)
 
         # Initialize activity logger with broadcast callback
         self.activity_logger = ActivityLogger(
@@ -133,7 +134,20 @@ class AppState:
         # Add Azure OpenAI chat completion if configured
         # Using Managed Identity / Service Principal via DefaultAzureCredential
         if self.settings.azure_openai_configured:
-            credential = DefaultAzureCredential()
+            tenant_id = os.getenv("AZURE_TENANT_ID")
+            client_id = os.getenv("AZURE_CLIENT_ID")
+            client_secret = os.getenv("AZURE_CLIENT_SECRET")
+            if not (tenant_id and client_id and client_secret):
+                raise ValueError(
+                    "Missing Service Principal credentials for Azure OpenAI. "
+                    "Set AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET."
+                )
+
+            credential = ClientSecretCredential(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                client_secret=client_secret,
+            )
             token_provider = get_bearer_token_provider(
                 credential, "https://cognitiveservices.azure.com/.default"
             )

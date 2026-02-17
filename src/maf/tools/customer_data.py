@@ -6,12 +6,21 @@ Converted from src/plugins/customer_data.py
 from typing import TYPE_CHECKING
 from agent_framework import ai_function
 from src.maf.activity import broadcast_activity_sync
+from src.maf.tools.kyc_verification import get_pending_submissions
 
 if TYPE_CHECKING:
     from src.infrastructure.mock_data import CustomerRepository
 
 # Module-level repository reference (set during initialization)
 _customer_repo: "CustomerRepository | None" = None
+
+
+def _find_pending_customer(customer_id: str) -> dict | None:
+    """Find a customer in pending submissions by ID."""
+    for submission in get_pending_submissions():
+        if submission.get("customer_id") == customer_id:
+            return submission
+    return None
 
 
 def init_customer_tools(customer_repository: "CustomerRepository") -> None:
@@ -87,6 +96,20 @@ def get_customer_by_id(customer_id: str) -> str:
     
     customer = _customer_repo.get_by_id(customer_id)
     if not customer:
+        # Check pending submissions for NEW-xxxx customers
+        submission = _find_pending_customer(customer_id)
+        if submission:
+            return (
+                f"Customer Found (Pending Application):\n"
+                f"- ID: {customer_id}\n"
+                f"- Name: {submission.get('first_name', '')} {submission.get('last_name', '')}\n"
+                f"- Date of Birth: {submission.get('date_of_birth', 'N/A')}\n"
+                f"- Nationality: {submission.get('nationality', 'N/A')}\n"
+                f"- Address: {submission.get('address', 'N/A')}\n"
+                f"- Status: {submission.get('status', 'pending')}\n"
+                f"- Risk Tier: {submission.get('risk_tier', 'N/A')}\n"
+                f"- Submitted: {submission.get('submitted_date', 'N/A')}"
+            )
         return f"No customer found with ID: {customer_id}"
 
     return (
@@ -123,6 +146,26 @@ def get_customer_kyc_status(customer_id: str) -> str:
     
     customer = _customer_repo.get_by_id(customer_id)
     if not customer:
+        # Check pending submissions for NEW-xxxx customers
+        submission = _find_pending_customer(customer_id)
+        if submission:
+            status = submission.get('status', 'pending')
+            risk_tier = submission.get('risk_tier', 'N/A')
+            alerts = submission.get('alerts', [])
+            alerts_str = "\n".join(f"  - {a}" for a in alerts) if alerts else "  None"
+            broadcast_activity_sync("tool_result", "System", {
+                "tool": "get_customer_kyc_status",
+                "customer_id": customer_id,
+                "overall_status": status
+            })
+            return (
+                f"KYC Status for {submission.get('first_name', '')} {submission.get('last_name', '')} ({customer_id}):\n"
+                f"\nOverall Status: {status.upper()}\n"
+                f"Risk Tier: {risk_tier.upper()}\n"
+                f"Submitted: {submission.get('submitted_date', 'N/A')}\n"
+                f"\nAlerts:\n{alerts_str}\n"
+                f"\nDocuments: Submitted via upload session"
+            )
         return f"No customer found with ID: {customer_id}"
 
     # Use get_kyc_status which returns docs and status together

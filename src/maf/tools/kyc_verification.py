@@ -396,6 +396,18 @@ def check_pep_status(customer_id: str) -> str:
     
     customer = _customer_repo.get_by_id(customer_id)
     if not customer:
+        # Check pending submissions for NEW-xxxx customers
+        for submission in _pending_submissions:
+            if submission.get("customer_id") == customer_id:
+                customer = {
+                    "id": customer_id,
+                    "first_name": submission.get("first_name", ""),
+                    "last_name": submission.get("last_name", ""),
+                    "nationality": submission.get("nationality", ""),
+                }
+                break
+    
+    if not customer:
         broadcast_activity_sync("tool_result", "System", {
             "tool": "check_pep_status",
             "result": "customer_not_found"
@@ -487,6 +499,18 @@ def check_country_risk(customer_id: str) -> str:
         return "Error: Customer repository not initialized"
     
     customer = _customer_repo.get_by_id(customer_id)
+    if not customer:
+        # Check pending submissions for NEW-xxxx customers
+        for submission in _pending_submissions:
+            if submission.get("customer_id") == customer_id:
+                customer = {
+                    "id": customer_id,
+                    "first_name": submission.get("first_name", ""),
+                    "last_name": submission.get("last_name", ""),
+                    "nationality": submission.get("nationality", ""),
+                }
+                break
+    
     if not customer:
         broadcast_activity_sync("tool_result", "System", {
             "tool": "check_country_risk",

@@ -1,8 +1,17 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Briefcase, Bot, Wifi, WifiOff, ClipboardCheck } from 'lucide-react';
+import { Send, Briefcase, Bot, Wifi, WifiOff, ClipboardCheck, X, Loader2, ChevronDown } from 'lucide-react';
 import { ChatMessage } from '../types';
 import DocumentUpload from './DocumentUpload';
 import ComplianceReviewForm from './ComplianceReviewForm';
+
+interface PendingReview {
+  customer_id: string;
+  customer_name: string;
+  status: string;
+  submitted_date: string;
+  risk_tier: string;
+  risk_score: number;
+}
 
 interface EmployeeChatProps {
   messages: ChatMessage[];
@@ -14,12 +23,27 @@ export default function EmployeeChat({ messages, onSendMessage, isConnected }: E
   const [input, setInput] = useState('');
   const [showComplianceForm, setShowComplianceForm] = useState(false);
   const [reviewCustomerId, setReviewCustomerId] = useState<string>('');
+  const [showPendingList, setShowPendingList] = useState(false);
+  const [pendingReviews, setPendingReviews] = useState<PendingReview[]>([]);
+  const [loadingPending, setLoadingPending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const pendingListRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Close pending list on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (pendingListRef.current && !pendingListRef.current.contains(e.target as Node)) {
+        setShowPendingList(false);
+      }
+    };
+    if (showPendingList) document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showPendingList]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -29,12 +53,34 @@ export default function EmployeeChat({ messages, onSendMessage, isConnected }: E
     }
   };
 
-  const handleOpenComplianceForm = () => {
-    const customerId = prompt('Enter Customer ID to review (e.g., C015):');
-    if (customerId) {
-      setReviewCustomerId(customerId.trim());
-      setShowComplianceForm(true);
+  const loadPendingReviews = async () => {
+    setLoadingPending(true);
+    try {
+      const res = await fetch('/api/compliance/pending');
+      if (res.ok) {
+        const data = await res.json();
+        setPendingReviews(data.reviews || []);
+      }
+    } catch (err) {
+      console.error('Failed to load pending reviews:', err);
+    } finally {
+      setLoadingPending(false);
     }
+  };
+
+  const handleOpenComplianceList = async () => {
+    if (showPendingList) {
+      setShowPendingList(false);
+      return;
+    }
+    await loadPendingReviews();
+    setShowPendingList(true);
+  };
+
+  const handleSelectReview = (customerId: string) => {
+    setReviewCustomerId(customerId);
+    setShowComplianceForm(true);
+    setShowPendingList(false);
   };
 
   const handleComplianceDecision = async (
@@ -42,7 +88,6 @@ export default function EmployeeChat({ messages, onSendMessage, isConnected }: E
     notes: string, 
     reviewedDocs: string[]
   ) => {
-    // Send the decision as a message to the chat
     const decisionText = decision === 'approved' 
       ? `APPROVED` 
       : decision === 'approved_with_conditions'
@@ -57,6 +102,15 @@ export default function EmployeeChat({ messages, onSendMessage, isConnected }: E
     onSendMessage(message);
     setShowComplianceForm(false);
     setReviewCustomerId('');
+  };
+
+  const riskColor = (tier: string) => {
+    switch (tier.toLowerCase()) {
+      case 'high': return 'text-red-700 bg-red-100 border-red-300';
+      case 'medium': return 'text-amber-700 bg-amber-100 border-amber-300';
+      case 'low': return 'text-green-700 bg-green-100 border-green-300';
+      default: return 'text-gray-700 bg-gray-100 border-gray-300';
+    }
   };
 
   // Show compliance form modal if active
@@ -152,18 +206,72 @@ export default function EmployeeChat({ messages, onSendMessage, isConnected }: E
         <div className="flex gap-2 mb-2">
           <DocumentUpload 
             onCustomerCreated={(customerId, accountNumber) => {
-              // Optionally notify the chat about the new customer
               console.log(`Customer ${customerId} created with account ${accountNumber}`);
             }}
           />
-          <button
-            type="button"
-            onClick={handleOpenComplianceForm}
-            className="flex items-center gap-2 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
-          >
-            <ClipboardCheck className="w-4 h-4" />
-            Compliance Review
-          </button>
+          <div className="relative" ref={pendingListRef}>
+            <button
+              type="button"
+              onClick={handleOpenComplianceList}
+              className="flex items-center gap-2 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+            >
+              <ClipboardCheck className="w-4 h-4" />
+              Compliance Review
+              <ChevronDown className={`w-3 h-3 transition-transform ${showPendingList ? 'rotate-180' : ''}`} />
+            </button>
+
+            {/* Pending reviews dropdown */}
+            {showPendingList && (
+              <div className="absolute bottom-full left-0 mb-1 w-80 bg-white border border-gray-200 rounded-lg shadow-xl z-50 max-h-80 overflow-y-auto">
+                <div className="flex items-center justify-between px-3 py-2 border-b bg-gray-50 rounded-t-lg">
+                  <span className="text-sm font-semibold text-gray-700">Pending Reviews</span>
+                  <button type="button" onClick={() => setShowPendingList(false)} className="text-gray-400 hover:text-gray-600">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                {loadingPending ? (
+                  <div className="flex items-center justify-center py-6">
+                    <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
+                    <span className="ml-2 text-sm text-gray-500">Loading...</span>
+                  </div>
+                ) : pendingReviews.length === 0 ? (
+                  <div className="py-6 text-center text-sm text-gray-500">No pending reviews</div>
+                ) : (
+                  <div className="py-1">
+                    {pendingReviews.map((review) => (
+                      <button
+                        key={review.customer_id}
+                        type="button"
+                        onClick={() => handleSelectReview(review.customer_id)}
+                        className="w-full text-left px-3 py-2.5 hover:bg-blue-50 transition-colors border-b border-gray-100 last:border-b-0"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium text-sm text-gray-900 truncate">
+                                {review.customer_name || review.customer_id}
+                              </span>
+                              {review.risk_tier && (
+                                <span className={`text-xs px-1.5 py-0.5 rounded border font-medium uppercase ${riskColor(review.risk_tier)}`}>
+                                  {review.risk_tier}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <span className="text-xs text-gray-500">{review.customer_id}</span>
+                              <span className="text-xs text-gray-400">·</span>
+                              <span className="text-xs text-gray-500">{review.submitted_date?.split('T')[0]}</span>
+                            </div>
+                          </div>
+                          <span className="text-xs text-gray-400 ml-2">→</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
         <div className="flex gap-2">
           <input

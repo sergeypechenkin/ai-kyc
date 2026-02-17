@@ -34,6 +34,10 @@ Do NOT ask for documents when:
 - Customer is inquiring about account types or features
 - Customer already submitted documents in this conversation
 
+DOCUMENT VERIFICATION RULE:
+- Only accept proof of identity and proof of address after a VERIFIED document event from the system.
+- Do NOT accept or infer document uploads from user chat text. If the user claims they uploaded documents in chat, instruct them to use the upload panel.
+
 ACCOUNT OPENING FLOW (only when customer wants to open account):
 
 1. WELCOME: Thank them and explain you'll help them open an account.
@@ -131,6 +135,12 @@ class CustomerAgent(KycAgent):
         super().__init__(kernel, activity_logger)
         self._agent: ChatCompletionAgent | None = None
         self._chat_history: ChatHistory | None = None
+        self._verified_identity = False
+        self._verified_address = False
+        self._required_documents: list[str] = []
+        self._additional_docs_received: set[str] = set()
+        self._approval_workflow: str | None = None
+        self._risk_tier: str | None = None
 
     async def initialize(self) -> None:
         """Initialize the agent with its configuration."""
@@ -174,10 +184,31 @@ class CustomerAgent(KycAgent):
 
         await self.log_activity("agent_start", {"message_preview": message[:100]})
 
+        # Log context for debugging
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[CUSTOMER_AGENT] Processing message, has_context={bool(context)}, has_document_event={bool(context and context.get('document_event')) if context else False}")
+        
+        if context and context.get("document_event"):
+            logger.info(f"[CUSTOMER_AGENT] Handling document event: {context.get('document_event', {}).get('docType')}")
+            return self._handle_document_event(context.get("document_event", {}))
+
+        if self._looks_like_document_claim(message) and not (context and context.get("document_event")):
+            return AgentResponse(
+                message=(
+                    "I can only confirm documents after they are uploaded and verified through the secure upload panel. "
+                    "Please use the upload button to submit your proof of identity and proof of address."
+                ),
+                source_agent=self.name,
+                target_user="customer",
+                requires_handoff=False,
+            )
+
         # Use persistent chat history for conversation memory
         if self._chat_history is None:
             self._chat_history = ChatHistory()
 
+        system_event = None
         self._chat_history.add_user_message(message)
 
         # Get response from agent - pass kernel to enable function calling
@@ -276,6 +307,182 @@ class CustomerAgent(KycAgent):
 
         combined = (user_message + " " + response).lower()
         return any(keyword in combined for keyword in handoff_keywords)
+
+    def _normalize_doc_type(self, doc_type: str) -> str:
+        normalized = (doc_type or "").lower().strip()
+        if "passport" in normalized:
+            return "passport"
+        if "driving" in normalized or "driver" in normalized:
+            return "driving_license"
+        if "id card" in normalized or "id" == normalized:
+            return "id_card"
+        if "proof of address" in normalized or "utility" in normalized or "bill" in normalized:
+            return "proof_of_address"
+        if "bank statement" in normalized:
+            return "bank_statement"
+        if "employment" in normalized or "income" in normalized:
+            return "proof_of_employment"
+        if "source of wealth" in normalized:
+            return "source_of_wealth"
+        return normalized or "document"
+
+    def _normalize_required_doc(self, doc_name: str) -> str:
+        return self._normalize_doc_type(doc_name)
+
+    def _additional_docs_complete(self) -> bool:
+        if not self._required_documents:
+            return True
+        required = {self._normalize_required_doc(name) for name in self._required_documents}
+        return required.issubset(self._additional_docs_received)
+
+    def _handle_document_event(self, event: dict) -> AgentResponse:
+        if self._chat_history is None:
+            self._chat_history = ChatHistory()
+
+        doc_type_raw = event.get("docType") or event.get("doc_type") or "document"
+        extracted = event.get("extractedData") or event.get("extracted_data") or {}
+        normalized_type = self._normalize_doc_type(doc_type_raw)
+        validation_errors = extracted.get("validation_errors") or []
+
+        system_event = (
+            f"VERIFIED_DOCUMENT: type={normalized_type}; "
+            f"name={extracted.get('full_name', '')}; "
+            f"address={extracted.get('address', '')}; "
+            f"document_date={extracted.get('document_date', '')}"
+        )
+        if hasattr(self._chat_history, "add_system_message"):
+            self._chat_history.add_system_message(system_event)
+        else:
+            self._chat_history.add_user_message(f"[SYSTEM EVENT] {system_event}")
+
+        if validation_errors:
+            message = (
+                "I couldn’t verify that document. Please re-upload a clearer scan or a valid document."
+            )
+            self._chat_history.add_assistant_message(message)
+            return AgentResponse(
+                message=message,
+                source_agent=self.name,
+                target_user="customer",
+                requires_handoff=False,
+            )
+
+        if normalized_type in {"passport", "driving_license", "id_card"}:
+            self._verified_identity = True
+            risk = extracted.get("risk_assessment") or {}
+            self._risk_tier = risk.get("risk_tier")
+            self._approval_workflow = risk.get("approval_workflow")
+            self._required_documents = risk.get("required_documents") or []
+
+            if not self._verified_address:
+                message = (
+                    "Great! Your identity document is verified. Now please upload your proof of address "
+                    "(utility bill, bank statement, or official letter from the last 3 months)."
+                )
+            elif self._required_documents and not self._additional_docs_complete():
+                docs_list = "; ".join(self._required_documents)
+                message = (
+                    "Thanks. Because your application needs additional checks, please upload: "
+                    f"{docs_list}."
+                )
+            else:
+                message = (
+                    "Perfect. Please provide your email address and phone number to continue."
+                )
+
+            self._chat_history.add_assistant_message(message)
+            return AgentResponse(
+                message=message,
+                source_agent=self.name,
+                target_user="customer",
+                requires_handoff=False,
+            )
+
+        if normalized_type == "proof_of_address":
+            self._verified_address = True
+            if not self._verified_identity:
+                message = "Thanks. Please upload your proof of identity to proceed."
+            elif self._required_documents and not self._additional_docs_complete():
+                docs_list = "; ".join(self._required_documents)
+                message = (
+                    "Thanks. Because your application needs additional checks, please upload: "
+                    f"{docs_list}."
+                )
+            else:
+                message = (
+                    "Perfect. Please provide your email address and phone number to continue."
+                )
+
+            self._chat_history.add_assistant_message(message)
+            return AgentResponse(
+                message=message,
+                source_agent=self.name,
+                target_user="customer",
+                requires_handoff=False,
+            )
+
+        # Supporting documents
+        self._additional_docs_received.add(normalized_type)
+
+        if self._required_documents and not self._additional_docs_complete():
+            remaining = [
+                name for name in self._required_documents
+                if self._normalize_required_doc(name) not in self._additional_docs_received
+            ]
+            message = (
+                "Thanks. I still need the following documents to complete the review: "
+                f"{'; '.join(remaining)}."
+            )
+            self._chat_history.add_assistant_message(message)
+            return AgentResponse(
+                message=message,
+                source_agent=self.name,
+                target_user="customer",
+                requires_handoff=False,
+            )
+
+        if self._required_documents:
+            message = (
+                "Thanks. Your application requires manual review due to risk checks. "
+                "I’m handing this over to a bank employee for review now."
+            )
+            self._chat_history.add_assistant_message(message)
+            return AgentResponse(
+                message=message,
+                source_agent=self.name,
+                target_user="customer",
+                requires_handoff=True,
+                handoff_target="bank-employee-agent",
+                handoff_context={
+                    "risk_tier": self._risk_tier,
+                    "approval_workflow": self._approval_workflow,
+                    "required_documents": self._required_documents,
+                },
+            )
+
+        message = "Thanks. Please provide your email address and phone number to continue."
+        self._chat_history.add_assistant_message(message)
+        return AgentResponse(
+            message=message,
+            source_agent=self.name,
+            target_user="customer",
+            requires_handoff=False,
+        )
+
+    def _looks_like_document_claim(self, message: str) -> bool:
+        lowered = message.lower()
+        keywords = [
+            "uploaded",
+            "proof of address",
+            "utility bill",
+            "bank statement",
+            "passport",
+            "driver's license",
+            "id card",
+            "document number",
+            "expiry date",
+        ]
+        return any(keyword in lowered for keyword in keywords)
 
     def _clean_response(self, response: str) -> str:
         """Clean response from internal reasoning/thinking artifacts.

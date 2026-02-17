@@ -85,6 +85,21 @@ function App() {
     customerWs.send({ type: 'chat', content });
   }, [customerWs]);
 
+  // Add a local-only customer message (no backend send)
+  const addCustomerLocalMessage = useCallback((content: string) => {
+    setCustomerMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: 'user',
+      content,
+      timestamp: new Date(),
+    }]);
+  }, []);
+
+  // Send verified document event (not a user chat message)
+  const sendCustomerDocumentEvent = useCallback((payload: { docType: string; extractedData: Record<string, unknown>; confirmed: boolean; sessionId?: string }) => {
+    customerWs.send({ type: 'document_event', payload });
+  }, [customerWs]);
+
   // Send employee message
   const sendEmployeeMessage = useCallback((content: string) => {
     // Add user message to chat
@@ -166,6 +181,8 @@ function App() {
             <CustomerChat
               messages={customerMessages}
               onSendMessage={sendCustomerMessage}
+              onAddLocalMessage={addCustomerLocalMessage}
+              onSendDocumentEvent={sendCustomerDocumentEvent}
               isConnected={customerWs.isConnected}
             />
           </div>

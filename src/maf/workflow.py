@@ -21,7 +21,7 @@ from agent_framework import (
     Role,
 )
 from agent_framework.azure import AzureOpenAIChatClient
-from azure.identity import DefaultAzureCredential, ClientSecretCredential
+from azure.identity import ClientSecretCredential
 from dotenv import load_dotenv
 
 # OpenTelemetry for agent tracing
@@ -31,6 +31,8 @@ try:
 except ImportError:
     _tracer = None
 
+from src.maf.telemetry import track_agent_operation
+
 from src.maf.agents.customer_agent import (
     CUSTOMER_AGENT_INSTRUCTIONS,
     get_customer_agent_tools,
@@ -39,6 +41,28 @@ from src.maf.agents.bank_employee_agent import (
     BANK_EMPLOYEE_INSTRUCTIONS,
     get_bank_employee_agent_tools,
 )
+
+
+def _get_deployment_name() -> str:
+    return (
+        os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+        or os.getenv("AZURE_OPENAI_DEPLOYMENT")
+        or "gpt-4o"
+    )
+
+
+def _extract_response_text(response: Any) -> str:
+    response_text = ""
+    for msg in response.messages:
+        if msg.role == Role.ASSISTANT:
+            if hasattr(msg, "text") and msg.text:
+                response_text = msg.text
+            elif hasattr(msg, "contents") and msg.contents:
+                for content in msg.contents:
+                    if hasattr(content, "text"):
+                        response_text = content.text
+                        break
+    return response_text
 
 
 class ChatRole(str, Enum):
@@ -108,42 +132,20 @@ class KycAgentExecutor(Executor):
                     "gen_ai.system": "azure_openai",
                     "gen_ai.operation.name": "chat",
                     "gen_ai.agent.name": self.role.value,
-                    "gen_ai.request.model": os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
+                    "gen_ai.request.model": _get_deployment_name(),
                     "gen_ai.prompt": message[:500],  # Truncate for telemetry
                 }
             ) as span:
                 response = await self.agent.run(self.conversation_history)
-                
-                # Extract response text
-                response_text = ""
-                for msg in response.messages:
-                    if msg.role == Role.ASSISTANT:
-                        if hasattr(msg, 'text') and msg.text:
-                            response_text = msg.text
-                        elif hasattr(msg, 'contents') and msg.contents:
-                            for content in msg.contents:
-                                if hasattr(content, 'text'):
-                                    response_text = content.text
-                                    break
+                response_text = _extract_response_text(response)
                 
                 # Add response to span
-                span.set_attribute("gen_ai.response.model", os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"))
+                span.set_attribute("gen_ai.response.model", _get_deployment_name())
                 span.set_attribute("gen_ai.completion", response_text[:500] if response_text else "")
         else:
             # Fallback without tracing
             response = await self.agent.run(self.conversation_history)
-            
-            # Extract response text
-            response_text = ""
-            for msg in response.messages:
-                if msg.role == Role.ASSISTANT:
-                    if hasattr(msg, 'text') and msg.text:
-                        response_text = msg.text
-                    elif hasattr(msg, 'contents') and msg.contents:
-                        for content in msg.contents:
-                            if hasattr(content, 'text'):
-                                response_text = content.text
-                                break
+            response_text = _extract_response_text(response)
         
         # Add to history
         self.conversation_history.append(
@@ -183,18 +185,19 @@ def create_chat_client() -> AzureOpenAIChatClient:
     client_id = os.getenv("AZURE_CLIENT_ID")
     client_secret = os.getenv("AZURE_CLIENT_SECRET")
     
-    if tenant_id and client_id and client_secret:
-        # Use Service Principal authentication
-        print("[INFO] Using Service Principal authentication for Azure OpenAI")
-        credential = ClientSecretCredential(
-            tenant_id=tenant_id,
-            client_id=client_id,
-            client_secret=client_secret
+    if not (tenant_id and client_id and client_secret):
+        raise ValueError(
+            "Missing Service Principal credentials for Azure OpenAI. "
+            "Set AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET."
         )
-    else:
-        # Fall back to DefaultAzureCredential (Azure CLI, Managed Identity, etc.)
-        print("[INFO] Using DefaultAzureCredential for Azure OpenAI")
-        credential = DefaultAzureCredential()
+
+    # Use Service Principal authentication only
+    print("[INFO] Using Service Principal authentication for Azure OpenAI")
+    credential = ClientSecretCredential(
+        tenant_id=tenant_id,
+        client_id=client_id,
+        client_secret=client_secret
+    )
     
     return AzureOpenAIChatClient(
         endpoint=endpoint,
@@ -334,19 +337,23 @@ class KycWorkflow:
         executor.conversation_history.append(user_message)
         
         # Run the agent
-        response = await executor.agent.run(executor.conversation_history)
-        
-        # Extract response text
         response_text = ""
-        for msg in response.messages:
-            if msg.role == Role.ASSISTANT:
-                if hasattr(msg, 'text') and msg.text:
-                    response_text = msg.text
-                elif hasattr(msg, 'contents') and msg.contents:
-                    for content in msg.contents:
-                        if hasattr(content, 'text'):
-                            response_text = content.text
-                            break
+        with track_agent_operation(
+            agent_name=role.value,
+            operation="chat",
+            attributes={
+                "gen_ai.system": "azure_openai",
+                "gen_ai.operation.name": "chat",
+                "gen_ai.agent.name": role.value,
+                "gen_ai.request.model": _get_deployment_name(),
+                "gen_ai.prompt_length": len(message),
+            },
+        ) as span:
+            response = await executor.agent.run(executor.conversation_history)
+            response_text = _extract_response_text(response)
+            if span:
+                span.set_attribute("gen_ai.response.model", _get_deployment_name())
+                span.set_attribute("gen_ai.completion_length", len(response_text))
         
         # Add to history
         executor.conversation_history.append(
@@ -383,23 +390,97 @@ class KycWorkflow:
         if executor is None:
             raise RuntimeError(f"No executor for role: {role}")
         
+        # Check for document event in context
+        if context and context.get("document_event"):
+            doc_event = context["document_event"]
+            doc_type = doc_event.get("docType", "document")
+            extracted = doc_event.get("extractedData", {})
+            
+            # Store extracted data for inter-agent tools
+            from src.maf.tools.inter_agent import store_extracted_data
+            store_data: dict = {}
+            if extracted.get("first_name"):
+                store_data["first_name"] = extracted["first_name"]
+            if extracted.get("last_name"):
+                store_data["last_name"] = extracted["last_name"]
+            if extracted.get("date_of_birth"):
+                store_data["date_of_birth"] = extracted["date_of_birth"]
+            if extracted.get("nationality"):
+                store_data["nationality"] = extracted["nationality"]
+            if extracted.get("address"):
+                store_data["address"] = extracted["address"]
+            if extracted.get("document_number"):
+                store_data["document_number"] = extracted["document_number"]
+            
+            risk = extracted.get("risk_assessment")
+            if risk:
+                store_data["risk_tier"] = risk.get("risk_tier", "")
+                store_data["risk_score"] = risk.get("risk_score", 0)
+                store_data["alerts"] = risk.get("alerts", [])
+            
+            upload_session_id = doc_event.get("sessionId", "")
+            store_extracted_data(store_data, upload_session_id)
+            
+            # Format document information for the agent
+            doc_info_parts = [f"[SYSTEM: Document verified - {doc_type}]"]
+            
+            if extracted.get("first_name"):
+                doc_info_parts.append(f"Name: {extracted.get('first_name')} {extracted.get('last_name', '')}")
+            if extracted.get("date_of_birth"):
+                doc_info_parts.append(f"DOB: {extracted.get('date_of_birth')}")
+            if extracted.get("nationality"):
+                doc_info_parts.append(f"Nationality: {extracted.get('nationality')}")
+            if extracted.get("address"):
+                doc_info_parts.append(f"Address: {extracted.get('address')}")
+            if extracted.get("document_number"):
+                doc_info_parts.append(f"Doc#: {extracted.get('document_number')}")
+            
+            # Add risk assessment if present
+            if risk:
+                doc_info_parts.append(f"Risk Tier: {risk.get('risk_tier', 'unknown')}")
+                doc_info_parts.append(f"Risk Score: {risk.get('risk_score', 0)}")
+                doc_info_parts.append(f"Workflow: {risk.get('approval_workflow', 'unknown')}")
+                if risk.get("required_documents"):
+                    docs = ", ".join(risk["required_documents"])
+                    doc_info_parts.append(f"Additional Docs Needed: {docs}")
+                if risk.get("alerts"):
+                    for alert in risk["alerts"]:
+                        doc_info_parts.append(f"Alert: {alert}")
+            
+            # Prepend document info to the message
+            message = "\n".join(doc_info_parts) + "\n\n" + message
+        
         # Add user message to history
         user_message = ChatMessage(role=Role.USER, text=message)
         executor.conversation_history.append(user_message)
         
         # Run the agent with streaming
         full_response = ""
-        async for update in executor.agent.run_stream(executor.conversation_history):
-            if hasattr(update, 'text') and update.text:
-                chunk = update.text
-                full_response += chunk
-                yield chunk
-            elif hasattr(update, 'contents') and update.contents:
-                for content in update.contents:
-                    if hasattr(content, 'text') and content.text:
-                        chunk = content.text
-                        full_response += chunk
-                        yield chunk
+        with track_agent_operation(
+            agent_name=role.value,
+            operation="chat.stream",
+            attributes={
+                "gen_ai.system": "azure_openai",
+                "gen_ai.operation.name": "chat",
+                "gen_ai.agent.name": role.value,
+                "gen_ai.request.model": _get_deployment_name(),
+                "gen_ai.prompt_length": len(message),
+            },
+        ) as span:
+            async for update in executor.agent.run_stream(executor.conversation_history):
+                if hasattr(update, 'text') and update.text:
+                    chunk = update.text
+                    full_response += chunk
+                    yield chunk
+                elif hasattr(update, 'contents') and update.contents:
+                    for content in update.contents:
+                        if hasattr(content, 'text') and content.text:
+                            chunk = content.text
+                            full_response += chunk
+                            yield chunk
+            if span:
+                span.set_attribute("gen_ai.response.model", _get_deployment_name())
+                span.set_attribute("gen_ai.completion_length", len(full_response))
         
         # Add full response to history
         executor.conversation_history.append(
@@ -423,11 +504,18 @@ class KycWorkflow:
     def set_grounding_enabled(self, enabled: bool) -> None:
         """Enable or disable document grounding.
         
+        Clears conversation history to prevent agents from retaining
+        grounded information when grounding is disabled.
+        
         Args:
             enabled: Whether grounding should be enabled
         """
         from src.maf.tools.document_search import set_grounding_enabled
         set_grounding_enabled(enabled)
+        
+        # Clear conversation history to prevent memory contamination
+        # When grounding is disabled, agents shouldn't remember grounded info
+        self.clear_history()
 
 
 # Singleton workflow instance

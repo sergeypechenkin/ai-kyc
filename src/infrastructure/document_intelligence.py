@@ -333,6 +333,15 @@ class DocumentIntelligenceService:
                         extracted["document_type"] = "id_card"
                     else:
                         extracted["document_type"] = "passport"  # Default to passport for ID documents
+                
+                # If DocumentType field was missing, default to passport
+                # since this method is specifically for ID documents
+                if not extracted["document_type"]:
+                    extracted["document_type"] = "passport"
+
+            # If no documents were returned at all, still default to passport
+            if not extracted["document_type"]:
+                extracted["document_type"] = "passport"
 
             # Return extracted data with full_name already populated
             # No need for deduplication since we're using structured fields

@@ -1,5 +1,5 @@
-import { useState, useRef, useMemo, useCallback } from 'react';
-import { Upload, Loader2, AlertCircle, RotateCcw, Check, AlertTriangle, ShieldAlert, FileWarning, CheckCircle2, X } from 'lucide-react';
+import { useState, useRef, useCallback, useEffect } from 'react';
+import { Upload, Loader2, AlertCircle, RotateCcw, ShieldAlert, CheckCircle2 } from 'lucide-react';
 
 interface RiskAssessment {
   risk_score: number;
@@ -38,49 +38,96 @@ interface DocumentSlot {
   isUploading: boolean;
   isDragging: boolean;
   error?: string;
+  sent?: boolean; // whether we already sent the document_event for this slot
 }
 
 interface InlineUploadProps {
-  onUploadComplete: (data: ExtractedData, docType: string, confirmed: boolean) => void;
+  onUploadComplete: (data: ExtractedData, docType: string, confirmed: boolean, sessionId?: string) => void;
   docType?: 'passport' | 'driving_license' | 'id_card' | 'proof_of_address' | 'auto';
   label?: string;
   sessionId?: string;
 }
+
+// Step-by-step flow:
+// 1. identity  – show identity upload zone only
+// 2. address   – identity done, show address upload zone
+// 3. additional – both primary docs done AND risk requires extra docs, show them one-by-one
+// 4. complete  – all documents collected
+type FlowStep = 'identity' | 'address' | 'additional' | 'complete';
 
 export default function InlineUpload({ 
   onUploadComplete, 
   docType = 'auto',
   sessionId: propsSessionId = 'default'
 }: InlineUploadProps) {
-  // Generate unique session ID to isolate document validation across resets
+  // Session ID
   const [sessionId, setSessionId] = useState(propsSessionId === 'default' ? 
     `upload-${Date.now()}-${Math.random().toString(36).substr(2, 9)}` : 
     propsSessionId
   );
-  // Primary document slots - Proof of Identity and Proof of Address
+
+  // Primary document slots
   const [identityDoc, setIdentityDoc] = useState<DocumentSlot>({ isUploading: false, isDragging: false });
   const [addressDoc, setAddressDoc] = useState<DocumentSlot>({ isUploading: false, isDragging: false });
-  
-  // Additional documents required after risk assessment
+
+  // Additional documents (keyed by doc name)
   const [additionalDocs, setAdditionalDocs] = useState<Record<string, {
     file: File;
+    extractedData?: ExtractedData;
     validation_messages?: string[];
     validation_errors?: string[];
     address?: string;
+    sent?: boolean;
   } | null>>({});
   const [uploadingAdditional, setUploadingAdditional] = useState<Set<string>>(new Set());
-  
-  // Refs for file inputs
+
+  // Which additional doc the user is currently uploading (index into required_documents)
+  const [currentAdditionalIdx, setCurrentAdditionalIdx] = useState(0);
+
+  // Refs
   const identityInputRef = useRef<HTMLInputElement>(null);
   const addressInputRef = useRef<HTMLInputElement>(null);
   const additionalInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  // Combined data state - track if user confirmed the submission
-  const [, setIsConfirmed] = useState(false);
+  // Derive risk assessment
+  const riskAssessment = identityDoc.extractedData?.risk_assessment;
+  const requiredAdditional = riskAssessment?.required_documents ?? [];
+  const needsAdditionalDocs = requiredAdditional.length > 0;
 
-  // Process file upload for a specific slot
+  // Derive current flow step
+  const flowStep: FlowStep = (() => {
+    if (!identityDoc.extractedData || !identityDoc.sent) return 'identity';
+    if (!addressDoc.extractedData || !addressDoc.sent) return 'address';
+    if (needsAdditionalDocs && currentAdditionalIdx < requiredAdditional.length) return 'additional';
+    return 'complete';
+  })();
+
+  // ──────────────────────────────────────────
+  // Auto-send document_event when a doc finishes uploading
+  // ──────────────────────────────────────────
+
+  // Identity: auto-send once extractedData arrives
+  useEffect(() => {
+    if (identityDoc.extractedData && !identityDoc.sent && !identityDoc.extractedData.error && !identityDoc.extractedData.validation_errors?.length) {
+      setIdentityDoc(prev => ({ ...prev, sent: true }));
+      onUploadComplete(identityDoc.extractedData, identityDoc.extractedData.document_type || 'passport', true, sessionId);
+    }
+  }, [identityDoc.extractedData]);
+
+  // Address: auto-send once extractedData arrives
+  useEffect(() => {
+    if (addressDoc.extractedData && !addressDoc.sent && !addressDoc.extractedData.error && !addressDoc.extractedData.validation_errors?.length) {
+      setAddressDoc(prev => ({ ...prev, sent: true }));
+      onUploadComplete(addressDoc.extractedData, 'proof_of_address', true, sessionId);
+    }
+  }, [addressDoc.extractedData]);
+
+  // ──────────────────────────────────────────
+  // Upload helpers
+  // ──────────────────────────────────────────
+
   const processFile = async (
-    file: File, 
+    file: File,
     slotType: 'identity' | 'address',
     setSlot: React.Dispatch<React.SetStateAction<DocumentSlot>>
   ) => {
@@ -90,7 +137,7 @@ export default function InlineUpload({
       return;
     }
 
-    setSlot(prev => ({ ...prev, isUploading: true, error: undefined, isDragging: false, file }));
+    setSlot(prev => ({ ...prev, isUploading: true, error: undefined, isDragging: false, file, sent: false }));
 
     const formData = new FormData();
     formData.append('file', file);
@@ -98,233 +145,128 @@ export default function InlineUpload({
     formData.append('session_id', sessionId);
 
     try {
-      const response = await fetch('/api/documents/upload', {
-        method: 'POST',
-        body: formData,
-      });
-
+      const response = await fetch('/api/documents/upload', { method: 'POST', body: formData });
       if (!response.ok) {
-        throw new Error('Upload failed');
+        let errorMessage = 'Upload failed';
+        try { const ed = await response.json(); errorMessage = ed.detail || errorMessage; } catch { errorMessage = `Upload failed: ${response.status} ${response.statusText}`; }
+        throw new Error(errorMessage);
       }
-
       const result = await response.json();
-      
       if (result.extracted_data) {
-        setSlot(prev => ({ 
-          ...prev, 
-          extractedData: result.extracted_data,
-          isUploading: false 
-        }));
+        setSlot(prev => ({ ...prev, extractedData: result.extracted_data, isUploading: false }));
       } else {
-        setSlot(prev => ({ 
-          ...prev, 
-          error: 'Could not extract document data',
-          isUploading: false 
-        }));
+        setSlot(prev => ({ ...prev, error: 'Could not extract document data', isUploading: false }));
       }
     } catch (err) {
-      setSlot(prev => ({ 
-        ...prev, 
-        error: err instanceof Error ? err.message : 'Upload failed',
-        isUploading: false 
-      }));
+      setSlot(prev => ({ ...prev, error: err instanceof Error ? err.message : 'Upload failed', isUploading: false }));
     }
   };
 
-  // Drag handlers for identity slot
-  const handleIdentityDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIdentityDoc(prev => ({ ...prev, isDragging: true }));
-  }, []);
-
-  const handleIdentityDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIdentityDoc(prev => ({ ...prev, isDragging: false }));
-  }, []);
-
-  const handleIdentityDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      processFile(files[0], 'identity', setIdentityDoc);
-    }
-  }, [sessionId]);
-
-  // Drag handlers for address slot
-  const handleAddressDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setAddressDoc(prev => ({ ...prev, isDragging: true }));
-  }, []);
-
-  const handleAddressDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setAddressDoc(prev => ({ ...prev, isDragging: false }));
-  }, []);
-
-  const handleAddressDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      processFile(files[0], 'address', setAddressDoc);
-    }
-  }, [sessionId]);
-
-  // File select handlers
-  const handleIdentityFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      processFile(file, 'identity', setIdentityDoc);
-    }
-    e.target.value = '';
-  };
-
-  const handleAddressFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      processFile(file, 'address', setAddressDoc);
-    }
-    e.target.value = '';
-  };
-
-  // Reset handlers
-  const resetIdentity = () => {
-    setIdentityDoc({ isUploading: false, isDragging: false });
-    setAdditionalDocs({});
-    // Generate new session ID so next passport upload is validated independently
-    setSessionId(`upload-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
-  };
-
-  const resetAddress = () => {
-    setAddressDoc({ isUploading: false, isDragging: false });
-    // Generate new session ID so next address document upload is validated independently
-    setSessionId(`upload-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
-  };
-
-  const resetAll = async () => {
-    try {
-      await fetch(`/api/documents/clear-session?session_id=${encodeURIComponent(sessionId)}`, {
-        method: 'POST',
-      });
-    } catch (err) {
-      console.error('Failed to clear session:', err);
-    }
-    setIdentityDoc({ isUploading: false, isDragging: false });
-    setAddressDoc({ isUploading: false, isDragging: false });
-    setAdditionalDocs({});
-    setIsConfirmed(false);
-    // Generate new session ID for fresh document validation
-    setSessionId(`upload-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
-  };
-
-  // Handle additional document upload
+  // Additional doc upload — auto-sends document_event on success
   const handleAdditionalFileSelect = async (docName: string, file: File) => {
     const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/tiff'];
     if (!allowedTypes.includes(file.type)) return;
 
     setUploadingAdditional(prev => new Set([...prev, docName]));
-    
+
     const formData = new FormData();
     formData.append('file', file);
     formData.append('doc_type', docName);
     formData.append('session_id', sessionId);
 
     try {
-      const response = await fetch('/api/documents/upload', {
-        method: 'POST',
-        body: formData,
-      });
-
+      const response = await fetch('/api/documents/upload', { method: 'POST', body: formData });
       if (response.ok) {
         const result = await response.json();
         const resultData = result.extracted_data || {};
-        setAdditionalDocs(prev => ({ 
-          ...prev, 
+        setAdditionalDocs(prev => ({
+          ...prev,
           [docName]: {
             file,
+            extractedData: resultData,
             validation_messages: resultData.validation_messages || [],
             validation_errors: resultData.validation_errors || [],
             address: resultData.address || '',
+            sent: true,
           }
         }));
+
+        // Auto-send document_event for additional doc
+        const syntheticData: ExtractedData = {
+          first_name: resultData.first_name || '',
+          last_name: resultData.last_name || '',
+          date_of_birth: resultData.date_of_birth || '',
+          nationality: resultData.nationality || '',
+          address: resultData.address || '',
+          document_number: resultData.document_number || '',
+          expiry_date: resultData.expiry_date || '',
+          document_type: docName,
+          document_date: resultData.document_date || '',
+          validation_messages: resultData.validation_messages || [],
+          validation_errors: resultData.validation_errors || [],
+        };
+        onUploadComplete(syntheticData, docName, true, sessionId);
+
+        // Advance to next additional doc
+        setCurrentAdditionalIdx(prev => prev + 1);
       }
     } catch (err) {
       console.error('Additional document upload failed:', err);
     } finally {
-      setUploadingAdditional(prev => {
-        const next = new Set(prev);
-        next.delete(docName);
-        return next;
-      });
+      setUploadingAdditional(prev => { const n = new Set(prev); n.delete(docName); return n; });
     }
   };
 
-  // Computed values
-  const bothDocumentsUploaded = identityDoc.extractedData && addressDoc.extractedData;
-  const hasIdentityErrors = identityDoc.extractedData?.validation_errors?.length;
-  const hasAddressErrors = addressDoc.extractedData?.validation_errors?.length;
-  const hasAnyErrors = hasIdentityErrors || hasAddressErrors;
-  
-  // Get risk assessment from identity document (primary)
-  const riskAssessment = identityDoc.extractedData?.risk_assessment;
-  
-  // Check if all required additional documents are uploaded
-  const allAdditionalDocsUploaded = useMemo(() => {
-    if (!riskAssessment?.required_documents?.length) return true;
-    return riskAssessment.required_documents.every(doc => additionalDocs[doc] !== undefined);
-  }, [riskAssessment, additionalDocs]);
+  // ──────────────────────────────────────────
+  // Drag / file-select handlers
+  // ──────────────────────────────────────────
 
-  // Handle confirmation - submit for compliance review if high risk
-  const handleConfirm = async () => {
-    if (!identityDoc.extractedData) return;
+  const handleIdentityDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setIdentityDoc(prev => ({ ...prev, isDragging: true })); }, []);
+  const handleIdentityDragLeave = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setIdentityDoc(prev => ({ ...prev, isDragging: false })); }, []);
+  const handleIdentityDrop = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); const f = e.dataTransfer.files; if (f.length > 0) processFile(f[0], 'identity', setIdentityDoc); }, [sessionId]);
 
-    // Merge address from proof of address document if identity doc doesn't have one
-    const data = {
-      ...identityDoc.extractedData,
-      address: identityDoc.extractedData.address || addressDoc.extractedData?.address || '',
-    };
-    
-    if (data.risk_assessment?.risk_tier === 'high' || 
-        data.risk_assessment?.approval_workflow === 'compliance_escalation') {
-      try {
-        const customerName = `${data.first_name} ${data.last_name}`.trim();
-        
-        await fetch('/api/compliance/submit', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            session_id: sessionId,
-            customer_name: customerName,
-            first_name: data.first_name || '',
-            last_name: data.last_name || '',
-            date_of_birth: data.date_of_birth || '',
-            nationality: data.nationality || '',
-            address: data.address,
-            document_number: data.document_number || '',
-            risk_tier: data.risk_assessment?.risk_tier || 'high',
-            risk_score: data.risk_assessment?.risk_score || 0,
-            alerts: data.risk_assessment?.alerts || [],
-          }),
-        });
-        console.log('[INFO] Submitted for compliance review');
-      } catch (err) {
-        console.error('Failed to submit for compliance review:', err);
-      }
-    }
-    
-    setIsConfirmed(true);
-    onUploadComplete(data, docType, true);
+  const handleAddressDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setAddressDoc(prev => ({ ...prev, isDragging: true })); }, []);
+  const handleAddressDragLeave = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setAddressDoc(prev => ({ ...prev, isDragging: false })); }, []);
+  const handleAddressDrop = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); const f = e.dataTransfer.files; if (f.length > 0) processFile(f[0], 'address', setAddressDoc); }, [sessionId]);
+
+  const handleIdentityFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => { const f = e.target.files?.[0]; if (f) processFile(f, 'identity', setIdentityDoc); e.target.value = ''; };
+  const handleAddressFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => { const f = e.target.files?.[0]; if (f) processFile(f, 'address', setAddressDoc); e.target.value = ''; };
+
+  // ──────────────────────────────────────────
+  // Reset
+  // ──────────────────────────────────────────
+
+  const resetAll = async () => {
+    try { await fetch(`/api/documents/clear-session?session_id=${encodeURIComponent(sessionId)}`, { method: 'POST' }); } catch {}
+    setIdentityDoc({ isUploading: false, isDragging: false });
+    setAddressDoc({ isUploading: false, isDragging: false });
+    setAdditionalDocs({});
+    setCurrentAdditionalIdx(0);
+    setSessionId(`upload-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
   };
 
-  // Render a document drop zone
-  const renderDropZone = (
+  const resetIdentity = () => {
+    setIdentityDoc({ isUploading: false, isDragging: false });
+    setAddressDoc({ isUploading: false, isDragging: false });
+    setAdditionalDocs({});
+    setCurrentAdditionalIdx(0);
+    setSessionId(`upload-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
+  };
+
+  const resetAddress = () => {
+    setAddressDoc({ isUploading: false, isDragging: false });
+    setAdditionalDocs({});
+    setCurrentAdditionalIdx(0);
+    setSessionId(`upload-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
+  };
+
+  // ──────────────────────────────────────────
+  // Render helpers
+  // ──────────────────────────────────────────
+
+  // Active upload drop zone
+  const renderUploadZone = (
     slot: DocumentSlot,
-    _slotType: 'identity' | 'address',
     title: string,
     subtitle: string,
     inputRef: React.RefObject<HTMLInputElement>,
@@ -334,158 +276,57 @@ export default function InlineUpload({
     onFileSelect: (e: React.ChangeEvent<HTMLInputElement>) => void,
     onReset: () => void
   ) => {
-    // Show uploaded state
-    if (slot.extractedData && !slot.extractedData.error) {
-      const data = slot.extractedData;
-      const hasErrors = data.validation_errors?.length;
-      
-      return (
-        <div className={`flex-1 border rounded-lg p-3 ${
-          hasErrors ? 'border-red-300 bg-red-50' : 'border-green-300 bg-green-50'
-        }`}>
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
-              {hasErrors ? (
-                <AlertCircle className="w-4 h-4 text-red-600" />
-              ) : (
-                <CheckCircle2 className="w-4 h-4 text-green-600" />
-              )}
-              <span className={`text-sm font-medium ${hasErrors ? 'text-red-700' : 'text-green-700'}`}>
-                {title}
-              </span>
-            </div>
-            <button
-              onClick={onReset}
-              className="p-1 hover:bg-gray-200 rounded transition-colors"
-              title="Upload different document"
-            >
-              <X className="w-4 h-4 text-gray-500" />
-            </button>
-          </div>
-          
-          <div className="text-xs space-y-0.5 text-gray-600">
-            <p><span className="text-gray-400">Name:</span> {(data.full_name || (data.first_name || data.last_name)) ? (data.full_name || `${data.first_name} ${data.last_name}`.trim()) : '(not extracted)'}</p>
-            {data.date_of_birth && (
-              <p><span className="text-gray-400">DOB:</span> {data.date_of_birth}</p>
-            )}
-            {data.nationality && (
-              <p><span className="text-gray-400">Nationality:</span> {data.nationality}</p>
-            )}
-            {data.address && (
-              <p><span className="text-gray-400">Address:</span> {data.address}</p>
-            )}
-            {data.document_number && (
-              <p><span className="text-gray-400">Doc #:</span> {data.document_number}</p>
-            )}
-            {data.document_date && (
-              <p><span className="text-gray-400">Date:</span> {data.document_date}</p>
-            )}
-          </div>
-          
-          {/* Validation messages */}
-          {data.validation_messages && data.validation_messages.length > 0 && (
-            <div className="mt-2 space-y-0.5">
-              {data.validation_messages.map((msg, idx) => (
-                <div key={idx} className="text-xs text-green-600 flex items-start gap-1">
-                  <CheckCircle2 className="w-3 h-3 mt-0.5 flex-shrink-0" />
-                  <span>{msg}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          
-          {/* Validation errors */}
-          {data.validation_errors && data.validation_errors.length > 0 && (
-            <div className="mt-2 space-y-0.5">
-              {data.validation_errors.map((err, idx) => (
-                <div key={idx} className="text-xs text-red-600 flex items-start gap-1">
-                  <AlertCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
-                  <span>{err}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          
-          {/* Validation warnings */}
-          {data.validation_warnings && data.validation_warnings.length > 0 && (
-            <div className="mt-2 space-y-0.5">
-              {data.validation_warnings.map((warn, idx) => (
-                <div key={idx} className="text-xs text-amber-600 flex items-start gap-1">
-                  <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
-                  <span>{warn}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          
-          <input
-            ref={inputRef}
-            type="file"
-            accept=".pdf,.jpg,.jpeg,.png,.tiff"
-            onChange={onFileSelect}
-            className="hidden"
-          />
-        </div>
-      );
-    }
-
-    // Show error state
+    // Uploaded with errors → let user retry
     if (slot.error) {
       return (
-        <div className="flex-1 border border-red-300 rounded-lg p-3 bg-red-50">
+        <div className="border border-red-300 rounded-lg p-3 bg-red-50">
           <div className="flex items-center gap-2 text-red-600 mb-2">
             <AlertCircle className="w-4 h-4" />
             <span className="text-sm">{slot.error}</span>
           </div>
-          <button
-            onClick={onReset}
-            className="text-xs px-2 py-1 bg-red-600 text-white rounded hover:bg-red-700 transition-colors"
-          >
-            Try Again
-          </button>
-          <input
-            ref={inputRef}
-            type="file"
-            accept=".pdf,.jpg,.jpeg,.png,.tiff"
-            onChange={onFileSelect}
-            className="hidden"
-          />
+          <button onClick={onReset} className="text-xs px-2 py-1 bg-red-600 text-white rounded hover:bg-red-700 transition-colors">Try Again</button>
+          <input ref={inputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.tiff" onChange={onFileSelect} className="hidden" />
         </div>
       );
     }
 
-    // Show upload zone
+    // Uploaded with validation errors → show summary + retry
+    if (slot.extractedData && slot.extractedData.validation_errors?.length) {
+      return (
+        <div className="border border-red-300 rounded-lg p-3 bg-red-50">
+          <div className="flex items-center gap-2 text-red-600 mb-1">
+            <AlertCircle className="w-4 h-4" />
+            <span className="text-sm font-medium">{title}</span>
+          </div>
+          {slot.extractedData.validation_errors.map((err, i) => (
+            <p key={i} className="text-xs text-red-600 ml-6">{err}</p>
+          ))}
+          <button onClick={onReset} className="mt-2 text-xs px-2 py-1 bg-red-600 text-white rounded hover:bg-red-700 transition-colors">Re-upload</button>
+        </div>
+      );
+    }
+
+    // Uploading / drop zone
     return (
       <div
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
         onClick={() => !slot.isUploading && inputRef.current?.click()}
-        className={`flex-1 border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${
-          slot.isDragging
-            ? 'border-blue-500 bg-blue-50'
-            : 'border-gray-300 hover:border-blue-400 hover:bg-gray-50'
+        className={`border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${
+          slot.isDragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-blue-400 hover:bg-gray-50'
         }`}
       >
-        <input
-          ref={inputRef}
-          type="file"
-          accept=".pdf,.jpg,.jpeg,.png,.tiff"
-          onChange={onFileSelect}
-          className="hidden"
-        />
-        
+        <input ref={inputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.tiff" onChange={onFileSelect} className="hidden" />
         {slot.isUploading ? (
           <div className="flex flex-col items-center py-2">
             <Loader2 className="w-6 h-6 text-blue-600 animate-spin mb-2" />
-            <p className="text-xs text-gray-600">Analyzing...</p>
+            <p className="text-xs text-gray-600">Analyzing document...</p>
           </div>
         ) : (
           <div className="flex flex-col items-center py-2">
             <Upload className={`w-6 h-6 mb-2 ${slot.isDragging ? 'text-blue-600' : 'text-gray-400'}`} />
-            <p className={`text-sm font-medium ${slot.isDragging ? 'text-blue-600' : 'text-gray-600'}`}>
-              {title}
-            </p>
+            <p className={`text-sm font-medium ${slot.isDragging ? 'text-blue-600' : 'text-gray-600'}`}>{title}</p>
             <p className="text-xs text-gray-400 mt-1">{subtitle}</p>
             <p className="text-xs text-gray-400 mt-2">Drop file or click</p>
           </div>
@@ -494,292 +335,130 @@ export default function InlineUpload({
     );
   };
 
-  // Render additional document slot
-  const renderAdditionalDocSlot = (docName: string) => {
-    if (additionalDocs[docName]) {
-      const docData = additionalDocs[docName]!;
-      const hasErrors = docData.validation_errors?.length;
-      
-      return (
-        <div className={`p-2 rounded text-sm ${
-          hasErrors ? 'bg-red-100 border border-red-200' : 'bg-green-100 border border-green-200'
-        }`}>
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className={`w-4 h-4 flex-shrink-0 ${hasErrors ? 'text-red-600' : 'text-green-600'}`} />
-            <span className={`truncate font-medium ${hasErrors ? 'text-red-700' : 'text-green-700'}`}>
-              {docData.file.name}
-            </span>
-          </div>
-          {docData.validation_messages?.map((msg, i) => (
-            <div key={i} className="ml-6 text-green-600 text-xs mt-1">{msg}</div>
-          ))}
-          {docData.validation_errors?.map((err, i) => (
-            <div key={i} className="ml-6 text-red-600 text-xs mt-1 flex items-center gap-1">
-              <AlertCircle className="w-3 h-3" /> {err}
-            </div>
-          ))}
-        </div>
-      );
-    }
+  // ──────────────────────────────────────────
+  // Progress indicator
+  // ──────────────────────────────────────────
+  const totalSteps = 2 + requiredAdditional.length; // identity + address + additional docs
+  const completedSteps = (identityDoc.sent ? 1 : 0) + (addressDoc.sent ? 1 : 0) +
+    requiredAdditional.filter((_, i) => i < currentAdditionalIdx).length;
 
-    return (
-      <>
-        <input
-          ref={(el) => { additionalInputRefs.current[docName] = el; }}
-          type="file"
-          accept=".pdf,.jpg,.jpeg,.png,.tiff"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) handleAdditionalFileSelect(docName, file);
-            e.target.value = '';
-          }}
-          className="hidden"
-        />
-        <div
-          onDragOver={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            e.currentTarget.classList.add('border-blue-400', 'bg-blue-50');
-          }}
-          onDragLeave={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            e.currentTarget.classList.remove('border-blue-400', 'bg-blue-50');
-          }}
-          onDrop={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            e.currentTarget.classList.remove('border-blue-400', 'bg-blue-50');
-            const file = e.dataTransfer.files[0];
-            if (file) handleAdditionalFileSelect(docName, file);
-          }}
-          onClick={() => additionalInputRefs.current[docName]?.click()}
-          className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-gray-300 rounded hover:border-blue-400 hover:bg-blue-50 transition-colors text-sm text-gray-600 cursor-pointer"
-        >
-          {uploadingAdditional.has(docName) ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Uploading...
-            </>
-          ) : (
-            <>
-              <Upload className="w-4 h-4" />
-              <span className="text-center">{docName}<br/><span className="text-xs text-gray-400">Click or drop file</span></span>
-            </>
-          )}
-        </div>
-      </>
-    );
-  };
+  // Build a compact list of completed step labels
+  const completedLabels: string[] = [];
+  if (identityDoc.sent) completedLabels.push('Identity');
+  if (addressDoc.sent) completedLabels.push('Address');
+  requiredAdditional.forEach((docName, i) => {
+    if (i < currentAdditionalIdx && additionalDocs[docName]) completedLabels.push(docName);
+  });
 
-  // Main render
+  // ──────────────────────────────────────────
+  // MAIN RENDER — only current step + compact completed list
+  // ──────────────────────────────────────────
   return (
-    <div className="space-y-4">
-      {/* Two primary document drop zones side by side */}
-      <div className="flex gap-3">
-        {renderDropZone(
-          identityDoc,
-          'identity',
-          'Proof of Identity',
-          'Passport, ID Card, or License',
-          identityInputRef,
-          handleIdentityDragOver,
-          handleIdentityDragLeave,
-          handleIdentityDrop,
-          handleIdentityFileSelect,
-          resetIdentity
-        )}
-        {renderDropZone(
-          addressDoc,
-          'address',
-          'Proof of Address',
-          'Utility Bill, Bank Statement',
-          addressInputRef,
-          handleAddressDragOver,
-          handleAddressDragLeave,
-          handleAddressDrop,
-          handleAddressFileSelect,
-          resetAddress
-        )}
+    <div className="space-y-2">
+      {/* Progress bar + compact completed steps */}
+      <div className="flex items-center gap-2 text-xs text-gray-500">
+        <span className="whitespace-nowrap">Step {Math.min(completedSteps + 1, totalSteps)}/{totalSteps}</span>
+        <div className="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+          <div className="h-full bg-blue-500 rounded-full transition-all duration-300" style={{ width: `${(completedSteps / totalSteps) * 100}%` }} />
+        </div>
+        {completedSteps === totalSteps && <CheckCircle2 className="w-4 h-4 text-green-600" />}
       </div>
-      
-      {/* Risk Assessment section - shown when identity doc is uploaded */}
-      {identityDoc.extractedData?.risk_assessment && (
-        <div className={`text-sm p-3 rounded border space-y-2 ${
-          riskAssessment?.risk_tier === 'high'
-            ? 'bg-red-50 border-red-300'
-            : riskAssessment?.risk_tier === 'medium'
-            ? 'bg-amber-50 border-amber-300'
-            : 'bg-green-50 border-green-300'
-        }`}>
-          <div className="flex items-center gap-2 font-medium">
-            <ShieldAlert className={`w-4 h-4 ${
-              riskAssessment?.risk_tier === 'high' ? 'text-red-600' 
-              : riskAssessment?.risk_tier === 'medium' ? 'text-amber-600' 
-              : 'text-green-600'
-            }`} />
-            <span className={
-              riskAssessment?.risk_tier === 'high' ? 'text-red-700' 
-              : riskAssessment?.risk_tier === 'medium' ? 'text-amber-700' 
-              : 'text-green-700'
-            }>
-              Risk Assessment: {riskAssessment?.risk_tier?.toUpperCase()} 
-              ({riskAssessment?.risk_score}/100)
+
+      {/* Compact completed-steps summary (one line with checkmarks) */}
+      {completedLabels.length > 0 && flowStep !== 'complete' && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-green-700">
+          {completedLabels.map((label, i) => (
+            <span key={i} className="flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3" />
+              {label}
             </span>
-          </div>
-          
-          {/* Alerts */}
-          {riskAssessment?.alerts && riskAssessment.alerts.length > 0 && (
-            <div className="space-y-1">
-              {riskAssessment.alerts.map((alert, idx) => (
-                <div key={idx} className={`text-sm ${
-                  riskAssessment.risk_tier === 'high' ? 'text-red-700' : 'text-amber-700'
-                }`}>
-                  {alert}
-                </div>
-              ))}
-            </div>
+          ))}
+          {riskAssessment && (
+            <span className={`flex items-center gap-1 font-medium ${
+              riskAssessment.risk_tier === 'high' ? 'text-red-600' : riskAssessment.risk_tier === 'medium' ? 'text-amber-600' : 'text-green-600'
+            }`}>
+              <ShieldAlert className="w-3 h-3" />
+              {riskAssessment.risk_tier.toUpperCase()} ({riskAssessment.risk_score})
+            </span>
           )}
-          
-          {/* Workflow requirement */}
-          <div className={`text-sm font-medium ${
-            riskAssessment?.approval_workflow === 'compliance_escalation' 
-              ? 'text-red-700' 
-              : riskAssessment?.approval_workflow === 'employee_review'
-              ? 'text-amber-700'
-              : 'text-green-700'
-          }`}>
-            {riskAssessment?.approval_workflow === 'compliance_escalation' 
-              ? '⛔ Requires Compliance Review'
-              : riskAssessment?.approval_workflow === 'employee_review'
-              ? '⏳ Requires Employee Approval'
-              : '✅ Auto-Approve Eligible'}
-          </div>
-          
-          {/* Required additional documents */}
-          {riskAssessment?.required_documents && riskAssessment.required_documents.length > 0 && (
-            <div className="mt-2 pt-2 border-t border-current/20">
-              <div className="flex items-center gap-1 text-sm font-medium mb-2">
-                <FileWarning className="w-4 h-4" />
-                Additional Documents Required:
-              </div>
-              <div className="space-y-2">
-                {riskAssessment.required_documents.map((doc, idx) => (
-                  <div key={idx}>
-                    {renderAdditionalDocSlot(doc)}
-                  </div>
-                ))}
-              </div>
-              {allAdditionalDocsUploaded && (
-                <div className="mt-3 p-2 bg-green-100 text-green-700 rounded text-sm flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4" />
-                  All required documents uploaded
+        </div>
+      )}
+
+      {/* ── STEP 1: Identity ── */}
+      {flowStep === 'identity' && (
+        <div>
+          <p className="text-sm font-medium text-gray-700 mb-2">Upload Proof of Identity</p>
+          {renderUploadZone(
+            identityDoc, 'Proof of Identity', 'Passport, ID Card, or License',
+            identityInputRef,
+            handleIdentityDragOver, handleIdentityDragLeave, handleIdentityDrop,
+            handleIdentityFileSelect, resetIdentity
+          )}
+        </div>
+      )}
+
+      {/* ── STEP 2: Address ── */}
+      {flowStep === 'address' && (
+        <div>
+          <p className="text-sm font-medium text-gray-700 mb-2">Upload Proof of Address</p>
+          {renderUploadZone(
+            addressDoc, 'Proof of Address', 'Utility Bill, Bank Statement',
+            addressInputRef,
+            handleAddressDragOver, handleAddressDragLeave, handleAddressDrop,
+            handleAddressFileSelect, resetAddress
+          )}
+        </div>
+      )}
+
+      {/* ── STEP 3+: Additional Documents (current one only) ── */}
+      {flowStep === 'additional' && currentAdditionalIdx < requiredAdditional.length && (() => {
+        const docName = requiredAdditional[currentAdditionalIdx];
+        return (
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">Upload {docName}</p>
+            <input
+              ref={(el) => { additionalInputRefs.current[docName] = el; }}
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png,.tiff"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleAdditionalFileSelect(docName, f); e.target.value = ''; }}
+              className="hidden"
+            />
+            <div
+              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.add('border-blue-400', 'bg-blue-50'); }}
+              onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove('border-blue-400', 'bg-blue-50'); }}
+              onDrop={(e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove('border-blue-400', 'bg-blue-50'); const f = e.dataTransfer.files[0]; if (f) handleAdditionalFileSelect(docName, f); }}
+              onClick={() => additionalInputRefs.current[docName]?.click()}
+              className="border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors border-gray-300 hover:border-blue-400 hover:bg-gray-50"
+            >
+              {uploadingAdditional.has(docName) ? (
+                <div className="flex flex-col items-center py-2">
+                  <Loader2 className="w-6 h-6 text-blue-600 animate-spin mb-2" />
+                  <p className="text-xs text-gray-600">Uploading...</p>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center py-2">
+                  <Upload className="w-6 h-6 mb-2 text-gray-400" />
+                  <p className="text-sm font-medium text-gray-600">{docName}</p>
+                  <p className="text-xs text-gray-400 mt-1">PDF, JPEG, PNG, or TIFF</p>
+                  <p className="text-xs text-gray-400 mt-2">Drop file or click</p>
                 </div>
               )}
             </div>
-          )}
-        </div>
-      )}
-      
-      {/* Submission section - shown when both docs uploaded and no critical errors */}
-      {bothDocumentsUploaded && !hasAnyErrors && (
-        <div className="border-t pt-3 mt-3">
-          {riskAssessment?.required_documents?.length ? (
-            allAdditionalDocsUploaded ? (
-              <div className="space-y-2">
-                <p className="text-sm text-gray-600">All documents verified. Ready to submit?</p>
-                <div className="flex gap-2">
-                  <button
-                    onClick={handleConfirm}
-                    className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
-                  >
-                    <Check className="w-4 h-4" />
-                    {riskAssessment.approval_workflow === 'compliance_escalation' 
-                      ? 'Submit for Compliance Review' 
-                      : 'Confirm & Proceed'}
-                  </button>
-                  <button
-                    onClick={resetAll}
-                    className="flex items-center gap-2 px-4 py-2.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
-                  >
-                    <RotateCcw className="w-4 h-4" />
-                    Start Over
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <p className="text-xs text-gray-500">Please upload all required additional documents above</p>
-            )
-          ) : (
-            <div className="space-y-2">
-              <p className="text-sm text-gray-600">Documents verified. Is this information correct?</p>
-              <div className="flex gap-2">
-                <button
-                  onClick={handleConfirm}
-                  className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm"
-                >
-                  <Check className="w-4 h-4" />
-                  Yes, confirm
-                </button>
-                <button
-                  onClick={resetAll}
-                  className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-sm"
-                >
-                  <RotateCcw className="w-4 h-4" />
-                  Start over
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+          </div>
+        );
+      })()}
 
-      {/* Missing documents state */}
-      {(!identityDoc.extractedData || !addressDoc.extractedData) && (
-        <div className="border-t pt-3 mt-3 bg-blue-50 border-blue-200 rounded-lg p-3 text-sm text-blue-700">
-          <div className="space-y-2">
-            <p className="font-medium flex items-center gap-2">
-              <AlertCircle className="w-4 h-4" />
-              Required Documents
-            </p>
-            <ul className="space-y-1 ml-6">
-              <li className="flex items-center gap-2">
-                {identityDoc.extractedData ? (
-                  <> <Check className="w-4 h-4 text-green-600" /> Proof of Identity <span className="text-gray-500">(uploaded)</span> </>
-                ) : (
-                  <> <AlertCircle className="w-4 h-4 text-blue-600" /> Proof of Identity <span className="text-gray-500">(required)</span> </>
-                )}
-              </li>
-              <li className="flex items-center gap-2">
-                {addressDoc.extractedData ? (
-                  <> <Check className="w-4 h-4 text-green-600" /> Proof of Address <span className="text-gray-500">(uploaded)</span> </>
-                ) : (
-                  <> <AlertCircle className="w-4 h-4 text-blue-600" /> Proof of Address <span className="text-gray-500">(required)</span> </>
-                )}
-              </li>
-            </ul>
-            <p className="text-xs text-blue-600 mt-2">Both documents are required to proceed with account opening.</p>
+      {/* ── Complete ── */}
+      {flowStep === 'complete' && (
+        <div className="p-3 rounded-lg bg-green-50 border border-green-300">
+          <div className="flex items-center gap-2 text-green-700 font-medium text-sm">
+            <CheckCircle2 className="w-4 h-4" />
+            All {totalSteps} documents uploaded
           </div>
-        </div>
-      )}
-      
-      {/* Error state - show when there are validation errors */}
-      {bothDocumentsUploaded && hasAnyErrors && (
-        <div className="border-t pt-3 mt-3">
-          <div className="text-sm p-3 rounded bg-red-50 text-red-700 border border-red-200 space-y-2">
-            <div className="font-medium flex items-center gap-1">
-              <AlertCircle className="w-4 h-4" />
-              Document Validation Issues
-            </div>
-            <p className="text-sm">Please fix the errors above by uploading corrected documents.</p>
-            <button
-              onClick={resetAll}
-              className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm font-medium"
-            >
-              <RotateCcw className="w-4 h-4" />
-              Start Over with New Documents
-            </button>
-          </div>
+          <p className="text-xs text-green-600 mt-1">Check the chat for next steps.</p>
+          <button onClick={resetAll} className="mt-2 flex items-center gap-1 px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200 transition-colors">
+            <RotateCcw className="w-3 h-3" /> Start Over
+          </button>
         </div>
       )}
     </div>
