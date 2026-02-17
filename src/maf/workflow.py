@@ -220,6 +220,7 @@ class KycWorkflow:
         self._customer_executor: KycAgentExecutor | None = None
         self._employee_executor: KycAgentExecutor | None = None
         self._initialized = False
+        self._notification_callback = None  # Callback to push notifications to WebSocket
     
     async def initialize(
         self,
@@ -285,6 +286,14 @@ class KycWorkflow:
         
         self._initialized = True
     
+    def set_notification_callback(self, callback) -> None:
+        """Set callback for pushing inter-agent notifications to clients.
+        
+        Args:
+            callback: Async function(channel: str, message: str, metadata: dict) -> None
+        """
+        self._notification_callback = callback
+    
     async def _handle_inter_agent_message(
         self,
         target_agent: str,
@@ -294,15 +303,59 @@ class KycWorkflow:
     ) -> None:
         """Handle inter-agent messages.
         
+        Routes notifications to the target agent's client via WebSocket
+        and injects them into the target agent's conversation history.
+        
         Args:
             target_agent: Target agent name
             content: Message content
             message_type: Type of message
             metadata: Additional metadata
         """
-        # In a full implementation, this would queue messages
-        # For now, we log the inter-agent communication
         print(f"[Inter-Agent] {metadata.get('source_agent')} -> {target_agent}: {content}")
+        
+        # Deliver notification to the target agent's client
+        if target_agent == "customer-agent" and self._notification_callback:
+            # Inject as system message into customer agent's conversation history
+            # so the agent has context for future questions
+            if self._customer_executor:
+                system_notification = (
+                    f"[SYSTEM: Notification from compliance team] {content}"
+                )
+                self._customer_executor.conversation_history.append(
+                    ChatMessage(role=Role.USER, text=system_notification)
+                )
+                
+                # Generate a customer-friendly response from the customer agent
+                try:
+                    response = await self._customer_executor.agent.run(
+                        self._customer_executor.conversation_history
+                    )
+                    response_text = _extract_response_text(response)
+                    self._customer_executor.conversation_history.append(
+                        ChatMessage(role=Role.ASSISTANT, text=response_text)
+                    )
+                except Exception as e:
+                    print(f"[ERROR] Failed to generate customer notification response: {e}")
+                    # Fallback to a direct message
+                    response_text = content
+                    self._customer_executor.conversation_history.append(
+                        ChatMessage(role=Role.ASSISTANT, text=response_text)
+                    )
+                
+                # Push to customer's WebSocket
+                await self._notification_callback("customer", response_text, metadata)
+        
+        elif target_agent == "bank-employee-agent" and self._notification_callback:
+            # Inject into employee agent's history and push to employee WebSocket
+            if self._employee_executor:
+                system_notification = (
+                    f"[SYSTEM: Notification from customer agent] {content}"
+                )
+                self._employee_executor.conversation_history.append(
+                    ChatMessage(role=Role.USER, text=system_notification)
+                )
+                await self._notification_callback("employee", content, metadata)
     
     async def process_message(
         self,
@@ -419,7 +472,7 @@ class KycWorkflow:
                 store_data["alerts"] = risk.get("alerts", [])
             
             upload_session_id = doc_event.get("sessionId", "")
-            store_extracted_data(store_data, upload_session_id)
+            store_extracted_data(store_data, upload_session_id, document_type=doc_type)
             
             # Format document information for the agent
             doc_info_parts = [f"[SYSTEM: Document verified - {doc_type}]"]

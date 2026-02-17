@@ -138,6 +138,27 @@ async def init_services():
     
     set_activity_callback(activity_callback)
     
+    # Set up inter-agent notification callback to push messages via WebSocket
+    async def notification_callback(channel: str, message: str, metadata: dict):
+        """Push inter-agent notifications to the target client's WebSocket."""
+        agent_name = "customer-agent" if channel == "customer" else "bank-employee-agent"
+        print(f"[Inter-Agent WS] Pushing notification to {channel}: {message[:100]}")
+        await manager.broadcast({
+            "type": "message",
+            "content": message,
+            "agent": agent_name,
+            "role": channel,
+            "notification": True,
+        }, channel)
+        # Also broadcast as activity event
+        await manager.broadcast_activity(
+            "inter_agent_notification",
+            agent_name,
+            {"message": message[:100] + "..." if len(message) > 100 else message},
+        )
+    
+    _workflow.set_notification_callback(notification_callback)
+    
     print("[OK] MAF Workflow initialized")
 
 

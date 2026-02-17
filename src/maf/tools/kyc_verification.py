@@ -181,14 +181,16 @@ def approve_kyc(customer_id: str, notes: str = "") -> str:
         # Find and update the pending submission
         for submission in _pending_submissions:
             if submission.get("customer_id") == customer_id:
-                submission["status"] = "approved"
+                customer_name = submission.get("customer_name", "Unknown")
+                # Remove completed submission from pending list
+                _pending_submissions.remove(submission)
                 _save_pending_submissions(_pending_submissions)
+                print(f"[DEBUG] Removed approved submission {customer_id} from pending. Remaining: {len(_pending_submissions)}")
                 broadcast_activity_sync("tool_result", "System", {
                     "tool": "approve_kyc",
                     "result": "approved",
                     "customer_id": customer_id
                 })
-                customer_name = submission.get("customer_name", "Unknown")
                 return (
                     f"KYC Approved:\n"
                     f"- Customer: {customer_name} ({customer_id})\n"
@@ -251,9 +253,11 @@ def reject_kyc(customer_id: str, reason: str) -> str:
     if customer_id.startswith("NEW-"):
         for submission in _pending_submissions:
             if submission.get("customer_id") == customer_id:
-                submission["status"] = "rejected"
-                _save_pending_submissions(_pending_submissions)
                 customer_name = submission.get("customer_name", "Unknown")
+                # Remove completed submission from pending list
+                _pending_submissions.remove(submission)
+                _save_pending_submissions(_pending_submissions)
+                print(f"[DEBUG] Removed rejected submission {customer_id} from pending. Remaining: {len(_pending_submissions)}")
                 return (
                     f"KYC Rejected:\n"
                     f"- Customer: {customer_name} ({customer_id})\n"
@@ -304,6 +308,8 @@ def request_additional_documents(customer_id: str, documents_needed: str, reason
         for submission in _pending_submissions:
             if submission.get("customer_id") == customer_id:
                 submission["status"] = "pending_documents"
+                submission["requested_documents"] = documents_needed
+                submission["request_reason"] = reason
                 _save_pending_submissions(_pending_submissions)
                 customer_name = submission.get("customer_name", "Unknown")
                 return (
@@ -351,12 +357,13 @@ def get_pending_reviews() -> str:
     # Get pending reviews from CSV
     pending = _customer_repo.get_pending_reviews()
     
-    # Add pending submissions from document uploads
+    # Add pending submissions from document uploads (pending review or resubmitted)
     for submission in _pending_submissions:
-        # Check if already in pending list
-        existing_ids = [p["customer_id"] for p in pending]
-        if submission.get("customer_id") not in existing_ids:
-            pending.append(submission)
+        status = submission.get("status", "")
+        if status in ("pending_compliance_review", "resubmitted"):
+            existing_ids = [p["customer_id"] for p in pending]
+            if submission.get("customer_id") not in existing_ids:
+                pending.append(submission)
 
     if not pending:
         return "No pending KYC reviews at this time."
@@ -365,9 +372,11 @@ def get_pending_reviews() -> str:
     for review in pending:
         risk_tier = review.get("risk_tier", "")
         risk_info = f" [RISK: {risk_tier.upper()}]" if risk_tier else ""
+        uploaded_docs = review.get("uploaded_documents", [])
+        docs_info = f" [Documents submitted: {', '.join(uploaded_docs)}]" if uploaded_docs else ""
         lines.append(
             f"- {review['customer_id']}: {review['customer_name']} - "
-            f"Status: {review['status']} (since {review['submitted_date']}){risk_info}"
+            f"Status: {review['status']} (since {review['submitted_date']}){risk_info}{docs_info}"
         )
 
     return f"Pending KYC Reviews ({len(pending)}):\n" + "\n".join(lines)

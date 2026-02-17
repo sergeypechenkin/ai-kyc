@@ -22,7 +22,7 @@ _extracted_customer_data: dict = {}
 _upload_session_id: str = ""
 
 
-def store_extracted_data(data: dict, upload_session_id: str = "") -> None:
+def store_extracted_data(data: dict, upload_session_id: str = "", document_type: str = "") -> None:
     """Store extracted data from document events for use in inter-agent tools.
     
     Called by the workflow when processing document_event messages.
@@ -34,7 +34,13 @@ def store_extracted_data(data: dict, upload_session_id: str = "") -> None:
             _extracted_customer_data[k] = v
     if upload_session_id:
         _upload_session_id = upload_session_id
-    print(f"[DEBUG] Stored extracted data: keys={list(_extracted_customer_data.keys())}, session={_upload_session_id}")
+    # Track uploaded document types
+    if document_type:
+        if "uploaded_documents" not in _extracted_customer_data:
+            _extracted_customer_data["uploaded_documents"] = []
+        if document_type not in _extracted_customer_data["uploaded_documents"]:
+            _extracted_customer_data["uploaded_documents"].append(document_type)
+    print(f"[DEBUG] Stored extracted data: keys={list(_extracted_customer_data.keys())}, docs={_extracted_customer_data.get('uploaded_documents', [])}, session={_upload_session_id}")
 
 
 def clear_extracted_data() -> None:
@@ -119,6 +125,7 @@ async def request_bank_review(customer_id: str, request_type: str, details: str)
         "risk_tier": _risk_tier,
         "risk_score": _risk_score,
         "alerts": _alerts,
+        "uploaded_documents": data.get("uploaded_documents", []),
         "session_id": _upload_session_id or f"inter-agent-{new_customer_id}-{datetime.now().isoformat()}",
         "upload_session_id": _upload_session_id,
         "details": details,
@@ -219,9 +226,88 @@ def get_available_agents() -> str:
     return "\n".join(lines)
 
 
+@ai_function
+async def resubmit_to_compliance(customer_id: str, details: str) -> str:
+    """Resubmit a customer's application to the compliance team after uploading additional requested documents.
+    
+    Use this when the compliance team previously requested additional documents and the customer
+    has now uploaded them. This reuses the existing customer ID instead of creating a new one.
+    
+    Args:
+        customer_id: The existing customer ID (e.g., NEW-1234) from the previous submission
+        details: Description of what additional documents were uploaded
+        
+    Returns:
+        Confirmation message
+    """
+    from src.maf.tools.kyc_verification import get_pending_submissions, _save_pending_submissions
+    
+    data = _extracted_customer_data
+    submissions = get_pending_submissions()
+    
+    # Find the existing submission
+    found = None
+    for submission in submissions:
+        if submission.get("customer_id") == customer_id:
+            found = submission
+            break
+    
+    if not found:
+        return f"No existing submission found for {customer_id}. Use request_bank_review for new submissions."
+    
+    # Update the submission status and add new document info
+    found["status"] = "resubmitted"
+    found["resubmitted_date"] = datetime.now().isoformat()
+    found["resubmit_details"] = details
+    # Update uploaded documents list with any new docs
+    existing_docs = found.get("uploaded_documents", [])
+    new_docs = data.get("uploaded_documents", [])
+    for doc in new_docs:
+        if doc not in existing_docs:
+            existing_docs.append(doc)
+    found["uploaded_documents"] = existing_docs
+    
+    _save_pending_submissions(submissions)
+    
+    customer_name = found.get("customer_name", customer_id)
+    
+    # Broadcast activity
+    broadcast_activity_sync("inter_agent", _current_agent, {
+        "action": "resubmit_to_compliance",
+        "from": _current_agent,
+        "to": "bank-employee-agent",
+        "customer_id": customer_id,
+        "customer_name": customer_name,
+        "details": details[:100]
+    })
+    
+    # Notify the employee agent
+    if _message_handler:
+        await _message_handler(
+            "bank-employee-agent",
+            f"Customer {customer_id} ({customer_name}) has uploaded the requested additional documents and resubmitted for compliance review. Details: {details}",
+            "resubmission",
+            {
+                "customer_id": customer_id,
+                "source_agent": _current_agent,
+                "details": details,
+            },
+        )
+    
+    print(f"[INFO] Resubmitted {customer_id} ({customer_name}) for compliance review")
+    
+    return (
+        f"Application resubmitted to compliance team:\n"
+        f"- Customer: {customer_name} ({customer_id})\n"
+        f"- Additional documents: {details}\n"
+        f"The compliance team will review the updated submission."
+    )
+
+
 # Export tools organized by agent type
 CUSTOMER_INTER_AGENT_TOOLS = [
     request_bank_review,
+    resubmit_to_compliance,
     get_available_agents,
 ]
 
