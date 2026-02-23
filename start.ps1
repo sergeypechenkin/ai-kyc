@@ -23,7 +23,7 @@ for ($i = 0; $i -lt 20; $i++) {
         $response = Invoke-WebRequest -Uri "http://localhost:8087/health" -Method GET -TimeoutSec 2 -UseBasicParsing -ErrorAction SilentlyContinue
         if ($response.StatusCode -eq 200) {
             $backendReady = $true
-            Write-Host "  ✓ Backend is ready!" -ForegroundColor Green
+            Write-Host "  [OK] Backend is ready!" -ForegroundColor Green
             break
         }
     }
@@ -33,7 +33,7 @@ for ($i = 0; $i -lt 20; $i++) {
 }
 
 if (-not $backendReady) {
-    Write-Host "  ⚠ Backend did not respond within 20 seconds" -ForegroundColor Yellow
+    Write-Host "  [WARN] Backend did not respond within 20 seconds" -ForegroundColor Yellow
     Write-Host "  Check for errors with: Receive-Job $($backendJob.Id)" -ForegroundColor Yellow
 }
 
@@ -56,7 +56,7 @@ for ($i = 0; $i -lt 10; $i++) {
         $response = Invoke-WebRequest -Uri "http://localhost:5173" -Method GET -TimeoutSec 2 -UseBasicParsing -ErrorAction SilentlyContinue
         if ($response.StatusCode -eq 200) {
             $frontendReady = $true
-            Write-Host "  ✓ Frontend is ready!" -ForegroundColor Green
+            Write-Host "  [OK] Frontend is ready!" -ForegroundColor Green
             break
         }
     }
@@ -66,25 +66,25 @@ for ($i = 0; $i -lt 10; $i++) {
 }
 
 if (-not $frontendReady) {
-    Write-Host "  ⚠ Frontend did not respond within 10 seconds" -ForegroundColor Yellow
+    Write-Host "  [WARN] Frontend did not respond within 10 seconds" -ForegroundColor Yellow
 }
 
 # Summary
 Write-Host ""
 Write-Host "======================================" -ForegroundColor Cyan
-Write-Host "✓ Application Started" -ForegroundColor Green
+Write-Host "Application Started" -ForegroundColor Green
 Write-Host "======================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Services:" -ForegroundColor White
 if ($backendReady) {
-    Write-Host "  Backend:  http://localhost:8087  ✓" -ForegroundColor Green
+    Write-Host "  Backend:  http://localhost:8087  [OK]" -ForegroundColor Green
 } else {
-    Write-Host "  Backend:  http://localhost:8087  ⚠" -ForegroundColor Yellow
+    Write-Host "  Backend:  http://localhost:8087  [WARN]" -ForegroundColor Yellow
 }
 if ($frontendReady) {
-    Write-Host "  Frontend: http://localhost:5173  ✓" -ForegroundColor Green
+    Write-Host "  Frontend: http://localhost:5173  [OK]" -ForegroundColor Green
 } else {
-    Write-Host "  Frontend: http://localhost:5173  ⚠" -ForegroundColor Yellow
+    Write-Host "  Frontend: http://localhost:5173  [WARN]" -ForegroundColor Yellow
 }
 Write-Host ""
 Write-Host "Background Jobs:" -ForegroundColor White
