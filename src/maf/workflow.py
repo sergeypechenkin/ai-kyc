@@ -21,7 +21,7 @@ from agent_framework import (
     Role,
 )
 from agent_framework.azure import AzureOpenAIChatClient
-from azure.identity import ClientSecretCredential
+from azure.identity import ClientSecretCredential, get_bearer_token_provider
 from dotenv import load_dotenv
 
 # OpenTelemetry for agent tracing
@@ -199,11 +199,24 @@ def create_chat_client() -> AzureOpenAIChatClient:
         client_secret=client_secret
     )
     
+    # Use ad_token_provider for automatic token refresh
+    # Prevents 401 errors after token expiration (~1 hour)
+    token_provider = get_bearer_token_provider(
+        credential,
+        "https://cognitiveservices.azure.com/.default"
+    )
+    
     return AzureOpenAIChatClient(
         endpoint=endpoint,
         deployment_name=deployment,
-        credential=credential,
+        ad_token_provider=token_provider,
     )
+
+
+def _extracted_customer_data_has_risk(upload_session_id: str) -> bool:
+    """Check if stored extracted data has risk tier information."""
+    from src.maf.tools.inter_agent import _extracted_customer_data
+    return bool(_extracted_customer_data.get("risk_tier"))
 
 
 class KycWorkflow:
@@ -460,7 +473,8 @@ class KycWorkflow:
                 store_data["date_of_birth"] = extracted["date_of_birth"]
             if extracted.get("nationality"):
                 store_data["nationality"] = extracted["nationality"]
-            if extracted.get("address"):
+            # Only use address from proof_of_address document
+            if extracted.get("address") and doc_type == "proof_of_address":
                 store_data["address"] = extracted["address"]
             if extracted.get("document_number"):
                 store_data["document_number"] = extracted["document_number"]
@@ -488,7 +502,7 @@ class KycWorkflow:
             if extracted.get("document_number"):
                 doc_info_parts.append(f"Doc#: {extracted.get('document_number')}")
             
-            # Add risk assessment if present
+            # Add risk assessment if present (from this document or from stored session data)
             if risk:
                 doc_info_parts.append(f"Risk Tier: {risk.get('risk_tier', 'unknown')}")
                 doc_info_parts.append(f"Risk Score: {risk.get('risk_score', 0)}")
@@ -496,9 +510,22 @@ class KycWorkflow:
                 if risk.get("required_documents"):
                     docs = ", ".join(risk["required_documents"])
                     doc_info_parts.append(f"Additional Docs Needed: {docs}")
+                else:
+                    doc_info_parts.append("Additional Docs Needed: NONE")
                 if risk.get("alerts"):
                     for alert in risk["alerts"]:
                         doc_info_parts.append(f"Alert: {alert}")
+            elif store_data.get("risk_tier") or _extracted_customer_data_has_risk(upload_session_id):
+                # For non-primary docs (e.g., address proof), include stored risk info
+                # so the agent knows whether additional documents are needed
+                from src.maf.tools.inter_agent import _extracted_customer_data
+                stored_tier = store_data.get("risk_tier") or _extracted_customer_data.get("risk_tier", "unknown")
+                stored_score = store_data.get("risk_score") or _extracted_customer_data.get("risk_score", 0)
+                doc_info_parts.append(f"Risk Tier: {stored_tier}")
+                doc_info_parts.append(f"Risk Score: {stored_score}")
+                if stored_tier == "low":
+                    doc_info_parts.append("Additional Docs Needed: NONE")
+                    doc_info_parts.append("Workflow: auto_approve")
             
             # Prepend document info to the message
             message = "\n".join(doc_info_parts) + "\n\n" + message

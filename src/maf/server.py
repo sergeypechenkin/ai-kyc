@@ -490,7 +490,7 @@ async def upload_document(
 
 @app.post("/api/chat/clear")
 async def clear_chat(role: str | None = None):
-    """Clear chat history.
+    """Clear chat history and all associated session data.
     
     Args:
         role: Optional role to clear ("customer" or "employee"), or all if None
@@ -508,6 +508,17 @@ async def clear_chat(role: str | None = None):
         chat_role = ChatRole.EMPLOYEE
     
     _workflow.clear_history(chat_role)
+    
+    # Clear extracted customer data and document sessions
+    if role is None or role == "customer":
+        from src.maf.tools.inter_agent import clear_extracted_data
+        clear_extracted_data()
+        
+        # Clear all document sessions
+        _session_documents.clear()
+        _customer_session_map.clear()
+        if _document_validation:
+            _document_validation.clear_all_sessions()
     
     return {"status": "cleared", "role": role or "all"}
 

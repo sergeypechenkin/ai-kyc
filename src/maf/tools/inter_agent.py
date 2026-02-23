@@ -30,7 +30,7 @@ def store_extracted_data(data: dict, upload_session_id: str = "", document_type:
     """
     global _extracted_customer_data, _upload_session_id
     for k, v in data.items():
-        if v:  # only store non-empty values
+        if v is not None:  # store any non-None value, including 0 and []
             _extracted_customer_data[k] = v
     if upload_session_id:
         _upload_session_id = upload_session_id

@@ -121,6 +121,12 @@ class DocumentValidationService:
         self._secondary_documents.pop(session_id, None)
         self._risk_assessments.pop(session_id, None)
 
+    def clear_all_sessions(self) -> None:
+        """Clear all document sessions."""
+        self._primary_documents.clear()
+        self._secondary_documents.clear()
+        self._risk_assessments.clear()
+
     def replace_primary_document(self, session_id: str) -> None:
         """Clear primary document and all secondary documents.
         

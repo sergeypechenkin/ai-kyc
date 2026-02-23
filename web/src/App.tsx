@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Settings } from 'lucide-react';
+import { Settings, RotateCcw } from 'lucide-react';
 import CustomerChat from './components/CustomerChat';
 import EmployeeChat from './components/EmployeeChat';
 import ActivityLog from './components/ActivityLog';
@@ -114,6 +114,20 @@ function App() {
     employeeWs.send({ type: 'chat', content });
   }, [employeeWs]);
 
+  // Clear session (chat history + backend state)
+  const handleClearSession = useCallback(async (role: 'customer' | 'employee') => {
+    try {
+      await fetch(`/api/chat/clear?role=${role}`, { method: 'POST' });
+      if (role === 'customer') {
+        setCustomerMessages([]);
+      } else {
+        setEmployeeMessages([]);
+      }
+    } catch (error) {
+      console.error('Failed to clear session:', error);
+    }
+  }, []);
+
   // Toggle grounding
   const handleGroundingToggle = async (enabled: boolean) => {
     try {
@@ -174,9 +188,20 @@ function App() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-[calc(100vh-120px)]">
           {/* Customer Chat */}
           <div className="bg-white rounded-xl shadow-md overflow-hidden flex flex-col">
-            <div className="bg-blue-600 text-white px-4 py-4">
-              <h2 className="font-semibold text-lg">Customer Chat</h2>
-              <p className="text-blue-200 text-base">Talk to the Customer Service Agent</p>
+            <div className="bg-blue-600 text-white px-4 py-4 flex items-center justify-between">
+              <div>
+                <h2 className="font-semibold text-lg">Customer Chat</h2>
+                <p className="text-blue-200 text-base">Talk to the Customer Service Agent</p>
+              </div>
+              {customerMessages.length > 0 && (
+                <button
+                  onClick={() => handleClearSession('customer')}
+                  className="p-2 hover:bg-blue-700 rounded-lg transition-colors" 
+                  title="New Session"
+                >
+                  <RotateCcw className="w-5 h-5" />
+                </button>
+              )}
             </div>
             <CustomerChat
               messages={customerMessages}
@@ -189,9 +214,20 @@ function App() {
 
           {/* Employee Chat */}
           <div className="bg-white rounded-xl shadow-md overflow-hidden flex flex-col">
-            <div className="bg-green-600 text-white px-4 py-4">
-              <h2 className="font-semibold text-lg">Bank Employee Chat</h2>
-              <p className="text-green-200 text-base">Bank Employee Agent Interface</p>
+            <div className="bg-green-600 text-white px-4 py-4 flex items-center justify-between">
+              <div>
+                <h2 className="font-semibold text-lg">Bank Employee Chat</h2>
+                <p className="text-green-200 text-base">Bank Employee Agent Interface</p>
+              </div>
+              {employeeMessages.length > 0 && (
+                <button
+                  onClick={() => handleClearSession('employee')}
+                  className="p-2 hover:bg-green-700 rounded-lg transition-colors"
+                  title="New Session"
+                >
+                  <RotateCcw className="w-5 h-5" />
+                </button>
+              )}
             </div>
             <EmployeeChat
               messages={employeeMessages}
